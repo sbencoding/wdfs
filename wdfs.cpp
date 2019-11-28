@@ -51,7 +51,8 @@ std::vector<std::string> split_string(std::string *input, char delimiter) {
     return parts;
 }
 
-bool list_entries_expand(std::string *path, std::vector<EntryData> *result, std::string *auth_header) {
+// Returns: 1 => folder found; 0 => folder not found, entry exists; -1 => entry doesn't exist
+int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::string *auth_header) {
     if (remote_id_map.find(*path) != remote_id_map.end()) {
         LOG("[list_entries_expand]: Corresponding ID for %s was found in the cache\n", path->c_str());
         if (!remote_id_map[*path].is_dir) return false;
@@ -62,7 +63,7 @@ bool list_entries_expand(std::string *path, std::vector<EntryData> *result, std:
         for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
             result->push_back(*it);
         }
-        return true;
+        return 1;
     }
     std::vector<std::string> parts = split_string(path, '/');
     std::string currentId;
@@ -76,20 +77,25 @@ bool list_entries_expand(std::string *path, std::vector<EntryData> *result, std:
         } else {
             currentFullPath.append("/" + current);
             bool folderFound = false;
+            bool entry_found = false;
             for (auto item = currentItems.begin(); item != currentItems.end(); ++item) {
                 EntryData currentEntry = *item;
-                if (currentEntry.name == current && currentEntry.isDir) {
-                    currentId = currentEntry.id;
-                    id_cache_value cache_value;
-                    cache_value.id = currentId;
-                    cache_value.is_dir = true;
-                    // TODO: we could cache files and other things here as well instead of just the touched folders in the path
-                    remote_id_map.insert(make_pair(currentFullPath, cache_value));
-                    folderFound = true;
+                if (currentEntry.name == current) {
+                    entry_found = true;
+                    if (currentEntry.isDir) {
+                        currentId = currentEntry.id;
+                        id_cache_value cache_value;
+                        cache_value.id = currentId;
+                        cache_value.is_dir = true;
+                        // TODO: we could cache files and other things here as well instead of just the touched folders in the path
+                        remote_id_map.insert(make_pair(currentFullPath, cache_value));
+                        folderFound = true;
+                    }
                     break;
                 }
             }
-            if (!folderFound) return false;
+            if (!folderFound && !entry_found) return -1;
+            else if (!folderFound) return 0;
         }
 
         currentItems.clear();
@@ -100,7 +106,7 @@ bool list_entries_expand(std::string *path, std::vector<EntryData> *result, std:
         result->push_back(*it);
     }
 
-    return true;
+    return 1;
 }
 
 int get_subfolder_count(std::string *path, std::string *auth_header) {
@@ -116,14 +122,51 @@ int get_subfolder_count(std::string *path, std::string *auth_header) {
     } else {
         LOG("[get_subfolder_count]: Corresponding ID for path %s not found or ID didn't have cache subfolder count\n", path->c_str());
         std::vector<EntryData> subfolder_entries;
-        if (list_entries_expand(path, &subfolder_entries, auth_header)) {
+        int expand_result = list_entries_expand(path, &subfolder_entries, auth_header);
+        if (expand_result == 1) { // has entry and it's a directory
             int subfolder_count = 0;
             for (auto entry : subfolder_entries) {
                 if (entry.isDir) subfolder_count++;
             }
             return subfolder_count;
-        } else return -1;
+        } else if (expand_result == 0) return -1; // has entry but not directory
+        else return -2; // remote doesn't have this entry
     }
+}
+
+std::string get_path_remote_id(std::string* path, std::string* auth_header) {
+    if (*path == "/") {
+        return "root";
+    }
+    else if (remote_id_map.find(*path) != remote_id_map.end()) {
+        LOG("[get_remote_id]: Path is cached in remote_id_map");
+        return remote_id_map[*path].id;
+    }
+    LOG("[get_remote_id]: Path isn't cached, fetching id from server");
+    std::vector<EntryData> tmp; // TODO: check if there's a way to skip the vector param if not needed by caller
+    int expand_result = list_entries_expand(path, &tmp, auth_header);
+    if (expand_result == 1 || expand_result == 0) { // Entry exists on server
+        // TODO: this won't return IDs for files, since they are not cached!!!
+        return get_path_remote_id(path, auth_header); // Will read from cache
+    }
+
+    return std::string("");
+}
+
+// Create a new directory
+int WdFs::mkdir(const char* path, mode_t mode) {
+    LOG("[mkdir]: Creating new directory for path %s\n", path);
+    std::string str_path(path);
+    int folder_name_index = str_path.find_last_of('/');
+    std::string folder_name(str_path.substr(folder_name_index + 1, str_path.size() - folder_name_index - 1));
+    std::string path_prefix(str_path.substr(0, folder_name_index));
+    LOG("[mkdir]: Folder name is %s\n", folder_name.c_str());
+    LOG("[mkdir]: Path prefix is %s\n", path_prefix.c_str());
+    std::string prefix_id = get_path_remote_id(&path_prefix, &auth_header);
+    LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
+    std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), &auth_header);
+    LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());
+    return 0;
 }
 
 // Get the attributes of the file
@@ -139,15 +182,17 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
     std::vector<EntryData> subfolder_result;
     std::string str_path(path);
     int subfolder_count = get_subfolder_count(&str_path, &auth_header);
-    if (subfolder_count != -1) {
+    if (subfolder_count > -1) { // entry is a folder
         st->st_mode = S_IFDIR | 0755;
         LOG("[getattr] Path %s has %d subfolders\n", path, subfolder_count);
         st->st_nlink = 2 + subfolder_count;
-    } else {
+    } else if (subfolder_count == -1) { // entry is a file
         LOG("[getattr] Path %s is a file\n", path);
         st->st_mode = S_IFREG | 0644;
         st->st_nlink = 1;
         st->st_size = 1024;
+    } else { // entry doesn't exist
+        return -ENOENT;
     }
     return 0;
 }
@@ -160,7 +205,8 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
     std::vector<EntryData> entries;
     std::string str_path(path);
     std::string subfolder_id_param;
-    if (list_entries_expand(&str_path, &entries, &auth_header)) {
+    int expand_result = list_entries_expand(&str_path, &entries, &auth_header);
+    if (expand_result == 1) { // has entry and it's a directory
         LOG("[readdir] Given path is a folder\n");
         for (int i = 0; i < entries.size(); i++) {
             EntryData current = entries[i];
@@ -194,6 +240,10 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         for (auto item : subfolder_count_cache) {
             LOG("%s => %d\n", item.first.c_str(), item.second);
         }
+    } else if (expand_result == 0) {  // has entry but it's a file
+        return 0;
+    } else { // remote doesn't have the entry
+        return -ENOENT;
     }
 
     if (strcmp(path, "/") == 0) {

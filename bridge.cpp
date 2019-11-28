@@ -279,6 +279,116 @@ bool list_entries_multiple(const char* ids, std::string authtoken, std::vector<E
     return false;
 }
 
+std::string make_dir(const char* folder_name, const char* parent_folder_id, std::string* auth_token) {
+/*
+     return new Promise((resolve) => {
+        const mkdirUrl = `https://${wdHost}.remotewd.com/sdk/v2/files?resolveNameConflict=true`;
+        request.post(mkdirUrl, {
+            headers: { 'authorization': authToken }, multipart: [
+                {
+                    body: JSON.stringify({ // Directory creation parameters copied from wdc request to mkdirUrl endpoint
+                        'name': folderName,
+                        'parentID': subPath,
+                        'mimeType': 'application/x.wd.dir',
+                    })
+                }
+            ]
+        }, (error, response) => {
+            if (response.statusCode === 401) {
+                resolve({ success: false, error: undefined, session: false });
+                return;
+            }
+            if (error) {
+                log.fatal('Something went wrong');
+                log.debug('Status code: ' + response.statusCode);
+                log.error(error);
+                resolve({ success: false, error: error, session: true });
+                return;
+            }
+
+            const locationParts = response.headers['location'].split('/'); // ID of the new folder gets sent in the location header
+            resolve({ success: true, error: undefined, session: true, result: locationParts[locationParts.length - 1] });
+        });
+    });
+}
+ */
+
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[59 + strlen(wdhost)];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files?resolveNameConflict=true", wdhost);
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+       
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        chunk = curl_slist_append(chunk, "Content-Type: multipart/related; boundary=287032381131322");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // Write request body
+        
+        json req = {
+            {"name", folder_name},
+            {"parentID", parent_folder_id},
+            {"mimeType", "application/x.wd.dir"},
+        };
+
+        std::string body_header("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n");
+        std::string body_content = req.dump();
+        std::string body_footer("\r\n--287032381131322--");
+        std::string rbody(body_header + body_content + body_footer);
+
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) rbody.size());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, rbody.c_str());
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+    } else if (rd.status_code == 201) {
+        printf("mkdir request finished with status code 200\n");
+        for (auto header : rd.headers) {
+            // printf("%s: %s\n", header.name.c_str(), header.value.c_str());
+            if (header.name == "location") {
+                std::string location_header = header.value;
+                int lastPathPart = location_header.find_last_of('/');
+                printf("mkdir Found location header\n");
+                return location_header.substr(lastPathPart + 1, location_header.size() - lastPathPart - 1);
+            }
+        }
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+    }
+    return std::string("");
+
+}
+
 // Make a get request to the specified url
 ResponseData make_get(const char* url) {
     CURL *curl;
