@@ -389,6 +389,82 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, std:
 
 }
 
+bool remove_entry(std::string *entry_id, std::string *auth_token) {
+    // We're not doing the below js request here
+    // We're sending a single request to the /sdk/v2/files endpoint directly instead of the batch request
+//// Request body copied from a folder delete request
+        //const postBody = `Content-Id: 0\r\n\r\nDELETE /sdk/v2/files/${entryID} HTTP/1.1\r\nHost: ${wdHost}.remotewd.com\r\nAuthorization: ${authToken}\r\n\r\n`;
+        //// Send multipart/mixed to the server (since request module doesn't support the /mixed multipart MIME)
+        //const result = await multipartMixed(postBody, authToken);
+        //if (!result.success) resolve(result);
+        //else resolve({ success: result.status == 200, error: undefined, session: true, result: true });
+        //const options = {
+            //hostname: `${wdHost}.remotewd.com`,
+            //port: 443,
+            //path: '/sdk/v1/batch',
+            //method: 'POST',
+            //headers: {
+                //'authorizaiton': auth,
+                //'content-type': 'multipart/mixed; boundary=' + boundary,
+                //'content-length': Buffer.byteLength(data),
+            //},
+            //// agent: proxyAgent,
+        //};
+
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[59 + strlen(wdhost) + entry_id.size()];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s", wdhost, entry_id->c_str());
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+        // set request method to delete
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "DELETE");
+       
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+        return false;
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+        return false;
+    } else if (rd.status_code == 204) {
+        printf("rm request finished with status code 204\n");
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+        return false;
+    }
+    return true;
+}
+
 // Make a get request to the specified url
 ResponseData make_get(const char* url) {
     CURL *curl;

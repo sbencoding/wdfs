@@ -12,3 +12,4 @@ bool login(const char* username, const char* password, std::string* session_id);
 bool list_entries(const char* path, std::string authToken, std::vector<EntryData>* entries);
 bool list_entries_multiple(const char* ids, std::string authToken, std::vector<EntryData>* entries);
 std::string make_dir(const char* folder_name, const char* parent_id, std::string* auth_header);
+bool remove_entry(std::string *entry_id, std::string *auth_token);

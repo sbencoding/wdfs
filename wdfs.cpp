@@ -76,19 +76,22 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
             currentId = "root";
         } else {
             currentFullPath.append("/" + current);
+            //LOG("[list_entries_expand]: enumerating remote entries for %s (%s)\n", currentFullPath.c_str(), currentId.c_str());
             bool folderFound = false;
             bool entry_found = false;
             for (auto item = currentItems.begin(); item != currentItems.end(); ++item) {
                 EntryData currentEntry = *item;
+
                 if (currentEntry.name == current) {
+                    // TODO: should we cache files we encounter or just the path parts we go through?
                     entry_found = true;
+                    currentId = currentEntry.id;
+                    id_cache_value cache_value;
+                    cache_value.id = currentEntry.id;
+                    cache_value.is_dir = currentEntry.isDir;
+                    //LOG("[list_entries_expand]: updating cache with %s => %s[%d]\n", currentFullPath.c_str(), currentEntry.name.c_str(), cache_value.is_dir);
+                    remote_id_map.insert(make_pair(currentFullPath, cache_value));
                     if (currentEntry.isDir) {
-                        currentId = currentEntry.id;
-                        id_cache_value cache_value;
-                        cache_value.id = currentId;
-                        cache_value.is_dir = true;
-                        // TODO: we could cache files and other things here as well instead of just the touched folders in the path
-                        remote_id_map.insert(make_pair(currentFullPath, cache_value));
                         folderFound = true;
                     }
                     break;
@@ -139,18 +142,47 @@ std::string get_path_remote_id(std::string* path, std::string* auth_header) {
         return "root";
     }
     else if (remote_id_map.find(*path) != remote_id_map.end()) {
-        LOG("[get_remote_id]: Path is cached in remote_id_map");
+        LOG("[get_remote_id]: Path is cached in remote_id_map\n");
         return remote_id_map[*path].id;
     }
-    LOG("[get_remote_id]: Path isn't cached, fetching id from server");
+    LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
     std::vector<EntryData> tmp; // TODO: check if there's a way to skip the vector param if not needed by caller
     int expand_result = list_entries_expand(path, &tmp, auth_header);
     if (expand_result == 1 || expand_result == 0) { // Entry exists on server
-        // TODO: this won't return IDs for files, since they are not cached!!!
         return get_path_remote_id(path, auth_header); // Will read from cache
     }
 
     return std::string("");
+}
+
+// Remove a directory from the remote system
+int WdFs::rmdir(const char* dir_path) {
+    LOG("[rmdir]: Removing directory%s\n", dir_path);
+    std::string str_path(dir_path);
+    std::string remote_entry_id = get_path_remote_id(&str_path, &auth_header);
+    printf("[rmdir]: ID for remote entry is: %s\n", remote_entry_id.c_str());
+    bool result = remove_entry(&remote_entry_id, &auth_header);
+    if (result) {
+        LOG("[rmdir]: Directory remove successful\n");
+    } else {
+        LOG("[rmdir]: Directory remove failed\n");
+    }
+    return 0;
+}
+
+// Remove a file from the remote system
+int WdFs::unlink(const char* file_path) {
+    LOG("[unlink]: Removing file %s\n", file_path);
+    std::string str_path(file_path);
+    std::string remote_entry_id = get_path_remote_id(&str_path, &auth_header);
+    printf("[unlink]: ID for remote entry is: %s\n", remote_entry_id.c_str());
+    bool result = remove_entry(&remote_entry_id, &auth_header);
+    if (result) {
+        LOG("[unlink]: File remove successful\n");
+    } else {
+        LOG("[unlink]: File remove failed\n");
+    }
+    return 0;
 }
 
 // Create a new directory
