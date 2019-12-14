@@ -13,3 +13,5 @@ bool list_entries(const char* path, std::string authToken, std::vector<EntryData
 bool list_entries_multiple(const char* ids, std::string authToken, std::vector<EntryData>* entries);
 std::string make_dir(const char* folder_name, const char* parent_id, std::string* auth_header);
 bool remove_entry(std::string *entry_id, std::string *auth_token);
+bool read_file(std::string *file_id, void* buffer, int offset, int size, int *bytes_read, std::string *auth_header);
+bool get_file_size(std::string *file_id, int *file_size, std::string *auth_token);

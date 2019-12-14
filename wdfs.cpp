@@ -137,6 +137,7 @@ int get_subfolder_count(std::string *path, std::string *auth_header) {
     }
 }
 
+
 std::string get_path_remote_id(std::string* path, std::string* auth_header) {
     if (*path == "/") {
         return "root";
@@ -153,6 +154,17 @@ std::string get_path_remote_id(std::string* path, std::string* auth_header) {
     }
 
     return std::string("");
+}
+
+// Get the size of a file on the remote system
+int get_remote_file_size(std::string *file_path, std::string *auth_header) {
+    // TODO: name this method better, it's almost the same as the function in bridge.cpp
+    std::string file_id = get_path_remote_id(file_path, auth_header);
+    if (file_id.empty()) return -1;
+    int result = 0;
+    bool success = get_file_size(&file_id, &result, auth_header);
+    if (!success) return -1;
+    return result;
 }
 
 // Remove a directory from the remote system
@@ -222,7 +234,9 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
         LOG("[getattr] Path %s is a file\n", path);
         st->st_mode = S_IFREG | 0644;
         st->st_nlink = 1;
-        st->st_size = 1024;
+        int file_size = get_remote_file_size(&str_path, &auth_header);
+        LOG("[getattr]: Size of %s is %d bytes\n", path, file_size);
+        st->st_size = file_size;
     } else { // entry doesn't exist
         return -ENOENT;
     }
@@ -286,35 +300,15 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
 }
 
 int WdFs::read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *) {
-    char *selectedFile = NULL;
-    if (strcmp(path, "/test_file_1") == 0) {
-        LOG("First file selected\n");
-        selectedFile = test1text;
-    } else if (strcmp(path, "/test_file_2") == 0) {
-        selectedFile = test2text;
-        LOG("Second file selected\n");
-    } else return -1;
+    LOG("[read]: Requesting content for file %s [%d:%d]\n", path, offset, offset + size);
+    std::string str_path(path);
+    std::string file_id = get_path_remote_id(&str_path, &auth_header);
+    LOG("[read]: File ID on the remote is: %s\n", file_id.c_str());
+    if (file_id.empty()) return -1;
 
-
-    LOG("Reading data from offset: %d, %d bytes\n", offset, size);
-    LOG("File content size: %d\n", strlen(selectedFile));
-
-    int actualSize = 0;
-    if (size + offset > strlen(selectedFile)) {
-        actualSize = strlen(selectedFile) - offset;
-    } else actualSize = size;
-
-    LOG("Actual size to be read from file is: %d\n", actualSize);
-
-    memcpy(buffer, selectedFile + offset, actualSize);
-
-    return actualSize;
-
-    if (size + offset > strlen(selectedFile)) {
-        LOG("Returning length - offset\n");
-        return strlen(selectedFile) - offset;
-    } else {
-        LOG("Returning size\n");
-        return size;
-    }
+    int bytes_read = 0;
+    bool success = read_file(&file_id, buffer, (int)offset, (int)size, &bytes_read, &auth_header);
+    LOG("[read]: Actual bytes read from file: %d\n", bytes_read);
+    if (!success) return -1;
+    return bytes_read;
 }

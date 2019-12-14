@@ -21,6 +21,12 @@ struct ResponseData {
     int status_code;
 };
 
+// Data for reading response as a buffer
+struct buffer_result {
+    int bytes_read;
+    void *buffer;
+};
+
 // Get status code and collect headers
 static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
     // printf("headers: %s\n", buffer);
@@ -51,6 +57,12 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *us
 static size_t collect_response_string(void *content, size_t size, size_t nmemb, std::string *data) {
     char *strContent = (char *)content;
     data->append(strContent);
+    return size * nmemb;
+}
+
+static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, buffer_result *data) {
+    memcpy(data->buffer, content, size * nmemb);
+    data->bytes_read += (int)size * (int)nmemb;
     return size * nmemb;
 }
 
@@ -158,7 +170,9 @@ bool list_entries(const char* path, std::string authtoken, std::vector<EntryData
     
     curl = curl_easy_init();
     ResponseData rd;
+    // TODO: device ID is probably not the same for everyone
     const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    // TODO: is there better way to concat strings?
     char request_url[300];
     sprintf(request_url, "https://%s.remotewd.com/sdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", wdhost, path);
     std::string response_body;
@@ -418,7 +432,7 @@ bool remove_entry(std::string *entry_id, std::string *auth_token) {
     curl = curl_easy_init();
     ResponseData rd;
     const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[59 + strlen(wdhost) + entry_id.size()];
+    char request_url[59 + strlen(wdhost) + entry_id->size()];
     sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s", wdhost, entry_id->c_str());
     std::string response_body;
     if (curl) {
@@ -458,6 +472,137 @@ bool remove_entry(std::string *entry_id, std::string *auth_token) {
         return false;
     } else if (rd.status_code == 204) {
         printf("rm request finished with status code 204\n");
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool read_file(std::string *file_id, void* buffer, int offset, int size, int *bytes_read, std::string *auth_token) {
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[59 + strlen(wdhost) + file_id->size()];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/content?download=true", wdhost, file_id->c_str());
+    char range_header[60];
+    sprintf(range_header, "Range: bytes=%d-%d", offset, offset + size - 1);
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        chunk = curl_slist_append(chunk, range_header);
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // collect response body
+        buffer_result current_result;
+        current_result.buffer = buffer;
+        current_result.bytes_read = 0;
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        *bytes_read = current_result.bytes_read;
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+        return false;
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+        return false;
+    } else if (rd.status_code == 206) {
+        printf("read request finished with status code 206\n");
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool get_file_size(std::string *file_id, int *file_size, std::string *auth_token) { 
+        //const dataUrl = `https://${wdHost}.remotewd.com/sdk/v2/files/${fileID}?pretty=false&fields=size`; // Endpoint to get the size of the file
+        //request.get(dataUrl, { headers: { 'authorization': authToken } }, (error, response, body) => {
+            //if (response.statusCode === 401) {
+                //resolve({ sucess: false, error: undefined, session: false });
+                //return;
+            //}
+            //if (error) {
+                //log.fatal('Something went wrong');
+                //log.debug('Status code: ' + response.statusCode);
+                //log.error(error);
+                //resolve({ success: false, error: error, session: true });
+                //return;
+            //}
+            //resolve({ success: true, error: undefined, session: true, result: JSON.parse(body).size }); // Get the size of the file from the response
+        //});
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[59 + strlen(wdhost) + file_id->size()];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s?pretty=false&fields=size", wdhost, file_id->c_str());
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+        return false;
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+        return false;
+    } else if (rd.status_code == 200) {
+        printf("get_size request finished with status code 200\n");
+        auto json_response = json::parse(response_body);
+        int size = json_response["size"];
+        *file_size = size;
     } else {
         fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
         return false;
