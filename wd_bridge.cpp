@@ -13,7 +13,7 @@ int main (int argc, char *argv[]) {
     char* username = argv[1];
     char* password = argv[2];
     std::string authorizationHeader;
-    if (!login(username, password, &authorizationHeader)) {
+    if (!login(username, password, authorizationHeader)) {
         fprintf(stderr, "Login failed... shutting down\n");
         return 1;
     }

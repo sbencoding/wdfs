@@ -16,10 +16,6 @@
     #define LOG
 #endif
 
-// Define constant file contents
-static char test1text[] = "Hello from the test 1 file with fuse xdfs\0";
-static char test2text[] = "Hello from the test 2 file with fuse xdfs\0";
-
 struct id_cache_value {
     bool is_dir;
     std::string id;
@@ -32,9 +28,9 @@ std::unordered_map<std::string, std::string> temp_file_binding;
 std::unordered_map<std::string, std::string> create_opened_files;
 
 const int MY_O_RDONLY = 32768;
-const int MY_O_WRONLY = 32769;
-const int MY_O_RDWR = 32770;
-const int MY_O_APPEND = 33792;
+//const int MY_O_WRONLY = 32769;
+//const int MY_O_RDWR = 32770;
+//const int MY_O_APPEND = 33792;
 
 // Set the auth header of the application
 void WdFs::set_authorization_header(std::string authorization_header) {
@@ -59,13 +55,13 @@ std::vector<std::string> split_string(std::string *input, char delimiter) {
 }
 
 // Returns: 1 => folder found; 0 => folder not found, entry exists; -1 => entry doesn't exist
-int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::string *auth_header) {
+int list_entries_expand(std::string *path, std::vector<entry_data> *result, const std::string &auth_header) {
     if (remote_id_map.find(*path) != remote_id_map.end()) {
         LOG("[list_entries_expand]: Corresponding ID for %s was found in the cache\n", path->c_str());
         if (!remote_id_map[*path].is_dir) return false;
         std::string entryId = remote_id_map[*path].id;
-        std::vector<EntryData> cache_results;
-        list_entries(entryId.c_str(), *auth_header, &cache_results);
+        std::vector<entry_data> cache_results;
+        list_entries(entryId.c_str(), auth_header, &cache_results);
         LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
         for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
             result->push_back(*it);
@@ -74,7 +70,7 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
     }
     std::vector<std::string> parts = split_string(path, '/');
     std::string currentId;
-    std::vector<EntryData> currentItems;
+    std::vector<entry_data> currentItems;
     std::string currentFullPath;
 
     for (auto it = parts.begin(); it != parts.end(); ++it) {
@@ -87,7 +83,7 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
             bool folderFound = false;
             bool entry_found = false;
             for (auto item = currentItems.begin(); item != currentItems.end(); ++item) {
-                EntryData currentEntry = *item;
+                entry_data currentEntry = *item;
 
                 if (currentEntry.name == current) {
                     // TODO: should we cache files we encounter or just the path parts we go through?
@@ -95,10 +91,10 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
                     currentId = currentEntry.id;
                     id_cache_value cache_value;
                     cache_value.id = currentEntry.id;
-                    cache_value.is_dir = currentEntry.isDir;
+                    cache_value.is_dir = currentEntry.is_dir;
                     //LOG("[list_entries_expand]: updating cache with %s => %s[%d]\n", currentFullPath.c_str(), currentEntry.name.c_str(), cache_value.is_dir);
                     remote_id_map.insert(make_pair(currentFullPath, cache_value));
-                    if (currentEntry.isDir) {
+                    if (currentEntry.is_dir) {
                         folderFound = true;
                     }
                     break;
@@ -109,7 +105,7 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
         }
 
         currentItems.clear();
-        list_entries(currentId.c_str(), *auth_header, &currentItems);
+        list_entries(currentId.c_str(), auth_header, &currentItems);
     }
 
     for (auto it = currentItems.begin(); it != currentItems.end(); ++it) {
@@ -119,7 +115,7 @@ int list_entries_expand(std::string *path, std::vector<EntryData> *result, std::
     return 1;
 }
 
-int get_subfolder_count(std::string *path, std::string *auth_header) {
+int get_subfolder_count(std::string *path, const std::string &auth_header) {
     if (remote_id_map.find(*path) != remote_id_map.end() &&
             subfolder_count_cache.find(remote_id_map[*path].id) != subfolder_count_cache.end()) {
         LOG("[get_subfolder_count]: Corresponding ID for path %s found, ID had cached subfolder count\n", path->c_str());
@@ -131,12 +127,12 @@ int get_subfolder_count(std::string *path, std::string *auth_header) {
         return last_known_subfolder_count; 
     } else {
         LOG("[get_subfolder_count]: Corresponding ID for path %s not found or ID didn't have cache subfolder count\n", path->c_str());
-        std::vector<EntryData> subfolder_entries;
+        std::vector<entry_data> subfolder_entries;
         int expand_result = list_entries_expand(path, &subfolder_entries, auth_header);
         if (expand_result == 1) { // has entry and it's a directory
             int subfolder_count = 0;
             for (auto entry : subfolder_entries) {
-                if (entry.isDir) subfolder_count++;
+                if (entry.is_dir) subfolder_count++;
             }
             return subfolder_count;
         } else if (expand_result == 0) return -1; // has entry but not directory
@@ -144,9 +140,8 @@ int get_subfolder_count(std::string *path, std::string *auth_header) {
     }
 }
 
-
-std::string get_path_remote_id(std::string* path, std::string* auth_header) {
-    if (*path == "/") {
+std::string get_path_remote_id(std::string* path, const std::string &auth_header) {
+    if (*path == "/" || *path == "") {
         return "root";
     }
     else if (remote_id_map.find(*path) != remote_id_map.end()) {
@@ -154,8 +149,9 @@ std::string get_path_remote_id(std::string* path, std::string* auth_header) {
         return remote_id_map[*path].id;
     }
     LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
-    std::vector<EntryData> tmp; // TODO: check if there's a way to skip the vector param if not needed by caller
+    std::vector<entry_data> tmp; // TODO: check if there's a way to skip the vector param if not needed by caller
     int expand_result = list_entries_expand(path, &tmp, auth_header);
+    LOG("[get_remote_id]: expand result: %d\n", expand_result);
     if (expand_result == 1 || expand_result == 0) { // Entry exists on server
         return get_path_remote_id(path, auth_header); // Will read from cache
     }
@@ -164,12 +160,12 @@ std::string get_path_remote_id(std::string* path, std::string* auth_header) {
 }
 
 // Get the size of a file on the remote system
-int get_remote_file_size(std::string *file_path, std::string *auth_header) {
+int get_remote_file_size(std::string *file_path, const std::string &auth_header) {
     // TODO: name this method better, it's almost the same as the function in bridge.cpp
     std::string file_id = get_path_remote_id(file_path, auth_header);
     if (file_id.empty()) return -1;
     int result = 0;
-    bool success = get_file_size(&file_id, &result, auth_header);
+    bool success = get_file_size(file_id, result, auth_header);
     if (!success) return -1;
     return result;
 }
@@ -181,13 +177,13 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         // File to be released is an open temp file, close the write (upload) call here
         std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
         std::string remote_temp_id = temp_file_binding[str_path];
-        bool close_result = file_write_close(&remote_temp_id, &auth_header);
+        bool close_result = file_write_close(remote_temp_id, auth_header);
         if (!close_result) LOG("[release]: Remote temp file close failed\n");
         else LOG("[release]: Remote temp file closed\n");
         temp_file_binding.erase(str_path);
         // Remove the original file
-        std::string original_id = get_path_remote_id(&str_path, &auth_header);
-        bool remove_result = remove_entry(&original_id, &auth_header);
+        std::string original_id = get_path_remote_id(&str_path, auth_header);
+        bool remove_result = remove_entry(original_id, auth_header);
         if (!remove_result) {
             LOG("[release]: Failed to remove old file!\n");
             return -1;
@@ -198,7 +194,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         val.id = remote_temp_id;
         remote_id_map[str_path] = val;
         // Rename the new file
-        bool rename_result = rename_entry(&remote_temp_id, &file_name, &auth_header);
+        bool rename_result = rename_entry(remote_temp_id, file_name, auth_header);
         if (!rename_result) {
             LOG("[release]: Failed to rename new file to old name!\n");
             return -1;
@@ -207,7 +203,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         // File is has been created, but hasn't been closed yet
         std::string new_file_id = create_opened_files[str_path];
         create_opened_files.erase(str_path);
-        bool close_result = file_write_close(&new_file_id, &auth_header);
+        bool close_result = file_write_close(new_file_id, auth_header);
         if (!close_result) {
             LOG("[release]: Failed to close created file!\n");
             return -1;
@@ -228,16 +224,16 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
     LOG("[open]: Parent folder is: %s\n", parent_path.c_str());
     LOG("[open]: Temp file name is: %s\n", file_name.c_str());
-    std::string parent_id = get_path_remote_id(&parent_path, &auth_header);
+    std::string parent_id = get_path_remote_id(&parent_path, auth_header);
     LOG("[open]: Parent folder ID is: %s\n", parent_id.c_str());
     // Load contents of remote file into the temp file
-    std::string remote_id = get_path_remote_id(&str_path, &auth_header);
+    std::string remote_id = get_path_remote_id(&str_path, auth_header);
     int remote_file_size = -1;
-    if (get_file_size(&remote_id, &remote_file_size, &auth_header)) {
+    if (get_file_size(remote_id, remote_file_size, auth_header)) {
         LOG("[open]: Remote file exists and has %d bytes\n", remote_file_size);
         // Create temp file on remote
         std::string temp_file_id;
-        bool temp_open_res = file_write_open(&parent_id, &file_name, &auth_header, &temp_file_id);
+        bool temp_open_res = file_write_open(parent_id, file_name, auth_header, temp_file_id);
         if (!temp_open_res) return -1;
         // Read the remote file in chunks
         int bytes_read = 0;
@@ -247,7 +243,7 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
         std::string location_hdr("/sdk/v2/files/" + temp_file_id);
         while (bytes_read != remote_file_size) {
             int local_read = 0;
-            bool success = read_file(&remote_id, buffer, bytes_read, CHUNK_SIZE, &local_read, &auth_header);
+            bool success = read_file(remote_id, buffer, bytes_read, CHUNK_SIZE, local_read, auth_header);
             LOG("[open]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, remote_file_size);
             if (!success) return -1;
             bytes_read += local_read;
@@ -255,7 +251,7 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
             void *real_data = malloc(local_read);
             memcpy(real_data, buffer, local_read);
             // Write file to remote temp file
-            bool write_result = write_file(&auth_header, &location_hdr, bytes_read - local_read, local_read, (char*) real_data);
+            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) real_data);
             if (!write_result) return -1;
             free(real_data);
         }
@@ -277,7 +273,7 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
         std::string tmp_id = temp_file_binding[str_path];
         LOG("[write]: Tmp file found with ID: %s\n", tmp_id.c_str());
         std::string location_hdr("/sdk/v2/files/" + tmp_id);
-        bool result = write_file(&auth_header, &location_hdr, (int)offset, (int)size, buffer);
+        bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
         if (!result) return -1;
         LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
         return (int)size;
@@ -289,7 +285,7 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
             return -1;
         }
         std::string location_hdr("/sdk/v2/files/" + create_opened_files[str_path]);
-        bool result = write_file(&auth_header, &location_hdr, (int)offset, (int)size, buffer);
+        bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
         if (!result) return -1;
         LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
         return (int)size;
@@ -303,11 +299,11 @@ int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
     std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
     LOG("[create]: Parent folder is: %s\n", parent_path.c_str());
     LOG("[create]: File name is: %s\n", file_name.c_str());
-    std::string parent_id = get_path_remote_id(&parent_path, &auth_header);
+    std::string parent_id = get_path_remote_id(&parent_path, auth_header);
     LOG("[create]: Parent folder ID is: %s\n", parent_id.c_str());
 
     std::string new_id;
-    bool open_result = file_write_open(&parent_id, &file_name, &auth_header, &new_id);
+    bool open_result = file_write_open(parent_id, file_name, auth_header, new_id);
     if (!open_result) return -1;
     // Cache new file ID with the create map
     create_opened_files.insert(make_pair(str_path, new_id));
@@ -320,9 +316,9 @@ int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
 int WdFs::rmdir(const char* dir_path) {
     LOG("[rmdir]: Removing directory%s\n", dir_path);
     std::string str_path(dir_path);
-    std::string remote_entry_id = get_path_remote_id(&str_path, &auth_header);
+    std::string remote_entry_id = get_path_remote_id(&str_path, auth_header);
     printf("[rmdir]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool result = remove_entry(&remote_entry_id, &auth_header);
+    bool result = remove_entry(remote_entry_id, auth_header);
     if (result) {
         LOG("[rmdir]: Directory remove successful\n");
         // Remove folder from the ID cache
@@ -337,9 +333,9 @@ int WdFs::rmdir(const char* dir_path) {
 int WdFs::unlink(const char* file_path) {
     LOG("[unlink]: Removing file %s\n", file_path);
     std::string str_path(file_path);
-    std::string remote_entry_id = get_path_remote_id(&str_path, &auth_header);
+    std::string remote_entry_id = get_path_remote_id(&str_path, auth_header);
     printf("[unlink]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool result = remove_entry(&remote_entry_id, &auth_header);
+    bool result = remove_entry(remote_entry_id, auth_header);
     if (result) {
         LOG("[unlink]: File remove successful\n");
         // Remove file from the ID cache
@@ -359,9 +355,9 @@ int WdFs::mkdir(const char* path, mode_t mode) {
     std::string path_prefix(str_path.substr(0, folder_name_index));
     LOG("[mkdir]: Folder name is %s\n", folder_name.c_str());
     LOG("[mkdir]: Path prefix is %s\n", path_prefix.c_str());
-    std::string prefix_id = get_path_remote_id(&path_prefix, &auth_header);
+    std::string prefix_id = get_path_remote_id(&path_prefix, auth_header);
     LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
-    std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), &auth_header);
+    std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), auth_header);
     LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());
     return 0;
 }
@@ -376,9 +372,9 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
     st->st_atime = time(NULL);
     st->st_mtime = time(NULL);
 
-    std::vector<EntryData> subfolder_result;
+    std::vector<entry_data> subfolder_result;
     std::string str_path(path);
-    int subfolder_count = get_subfolder_count(&str_path, &auth_header);
+    int subfolder_count = get_subfolder_count(&str_path, auth_header);
     if (subfolder_count > -1) { // entry is a folder
         st->st_mode = S_IFDIR | 0755;
         LOG("[getattr] Path %s has %d subfolders\n", path, subfolder_count);
@@ -387,7 +383,7 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
         LOG("[getattr] Path %s is a file\n", path);
         st->st_mode = S_IFREG | 0644;
         st->st_nlink = 1;
-        int file_size = get_remote_file_size(&str_path, &auth_header);
+        int file_size = get_remote_file_size(&str_path, auth_header);
         LOG("[getattr]: Size of %s is %d bytes\n", path, file_size);
         if (file_size == -1) return -ENOENT; // ID of the file is invalid or size can't be requested
         st->st_size = file_size;
@@ -409,21 +405,21 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
     LOG("[readdir] Listing folder: %s\n", path);
     filler(buffer, ".", NULL, 0, FUSE_FILL_DIR_PLUS);
     filler(buffer, "..", NULL, 0, FUSE_FILL_DIR_PLUS);
-    std::vector<EntryData> entries;
+    std::vector<entry_data> entries;
     std::string str_path(path);
     std::string subfolder_id_param;
-    int expand_result = list_entries_expand(&str_path, &entries, &auth_header);
+    int expand_result = list_entries_expand(&str_path, &entries, auth_header);
     if (expand_result == 1) { // has entry and it's a directory
         LOG("[readdir] Given path is a folder\n");
         for (int i = 0; i < entries.size(); i++) {
-            EntryData current = entries[i];
+            entry_data current = entries[i];
             std::string cache_key(str_path + (str_path == "/" ? "" : "/") + current.name);
             id_cache_value cache_value;
             cache_value.id = current.id;
-            cache_value.is_dir = current.isDir;
+            cache_value.is_dir = current.is_dir;
             remote_id_map.insert(make_pair(cache_key, cache_value));
             filler(buffer, current.name.c_str(), NULL, 0, FUSE_FILL_DIR_PLUS);
-            if (current.isDir) {
+            if (current.is_dir) {
                 subfolder_id_param.append(current.id);
                 subfolder_id_param.append(",");
                 subfolder_count_cache[current.id] = 0;
@@ -436,11 +432,11 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
 
         subfolder_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
-        std::vector<EntryData> subfolders;
+        std::vector<entry_data> subfolders;
         list_entries_multiple(subfolder_id_param.c_str(), auth_header, &subfolders);
 
         for (auto entry : subfolders) {
-            if (entry.isDir) subfolder_count_cache[entry.parent_id]++;
+            if (entry.is_dir) subfolder_count_cache[entry.parent_id]++;
         }
 
         LOG("[readdir.cache_subfolder_count] Listing subfolder count cache:\n");
@@ -463,12 +459,12 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
 int WdFs::read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *) {
     LOG("[read]: Requesting content for file %s [%d:%d]\n", path, offset, offset + size);
     std::string str_path(path);
-    std::string file_id = get_path_remote_id(&str_path, &auth_header);
+    std::string file_id = get_path_remote_id(&str_path, auth_header);
     LOG("[read]: File ID on the remote is: %s\n", file_id.c_str());
     if (file_id.empty()) return -1;
 
     int bytes_read = 0;
-    bool success = read_file(&file_id, buffer, (int)offset, (int)size, &bytes_read, &auth_header);
+    bool success = read_file(file_id, buffer, (int)offset, (int)size, bytes_read, auth_header);
     LOG("[read]: Actual bytes read from file: %d\n", bytes_read);
     if (!success) return -1;
     return bytes_read;
