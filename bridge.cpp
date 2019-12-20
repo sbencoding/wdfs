@@ -18,8 +18,7 @@ struct http_header {
 // Data to pass around in CURL header callback
 struct response_data {
     // Header key value pairs
-    // TODO: better performance with an unordered_map probably
-    std::vector<http_header> headers;
+    std::unordered_map<std::string, std::string> headers;
     // Status code of the request
     int status_code;
     // Response body
@@ -34,25 +33,23 @@ struct buffer_result {
 
 // Get status code and collect headers
 static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
-    // printf("headers: %s\n", buffer);
     std::string buf(buffer);
-    int colonIndex = buf.find(":");
-    int httpIndex = buf.find("HTTP/");
-    response_data *rData = (response_data *)userdata;
-    // printf("Size: %d, nitems: %d, separator index: %d\n", size, nitems, colonIndex);
-    if (colonIndex != -1) {
-        //std::vector<http_header> *headers = (std::vector<http_header> *)userdata;
-        std::string name = buf.substr(0, colonIndex);
-        std::string value = buf.substr(colonIndex + 2);
-        // printf("Header name: %s; value: %s\n", name.c_str(), value.c_str());
-        http_header current(name, value);
-        rData->headers.push_back(current);
-    } else if (httpIndex == 0) {
+    int colon_index = buf.find(":");
+    int http_index = buf.find("HTTP/");
+    response_data *data = (response_data *)userdata;
+    if (colon_index != -1) {
+        std::string name = buf.substr(0, colon_index);
+        std::string value = buf.substr(colon_index + 2);
+        // remove the trailing \r\n
+        value = value.substr(0, value.size() - 2);
+        //http_header current(name, value);
+        data->headers.insert(make_pair(name, value));
+    } else if (http_index == 0) {
         // HTTP/1.1 200 OK => status code is between the 2 spaces
-        int firstSpace = buf.find_first_of(" ");
-        int lastSpace = buf.find_last_of(" ");
-        std::string status_code = buf.substr(firstSpace + 1, lastSpace - firstSpace - 1);
-        rData->status_code = std::stoi(status_code);
+        int first_space = buf.find_first_of(" ");
+        int last_space = buf.find_last_of(" ");
+        std::string status_code = buf.substr(first_space + 1, last_space - first_space - 1);
+        data->status_code = std::stoi(status_code);
     }
     return nitems * size;
 }
@@ -261,14 +258,11 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, cons
     response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
         printf("mkdir request finished with status code 201\n");
-        for (auto header : rd.headers) {
-            // printf("%s: %s\n", header.name.c_str(), header.value.c_str());
-            if (header.name == "location") {
-                std::string location_header = header.value;
-                int lastPathPart = location_header.find_last_of('/');
-                printf("mkdir Found location header\n");
-                return location_header.substr(lastPathPart + 1, location_header.size() - lastPathPart - 1);
-            }
+        if (rd.headers.find("location") != rd.headers.end()) {
+            std::string location_header = rd.headers["location"];
+            int lastPathPart = location_header.find_last_of('/');
+            printf("mkdir Found location header\n");
+            return location_header.substr(lastPathPart + 1, location_header.size() - lastPathPart - 1);
         }
     }
     return std::string("");
@@ -399,15 +393,11 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
 
     response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
-        for (http_header header : rd.headers) {
-            if (header.name == "location") {
-                // -2 to trim \r\n at the end of the header value
-                // TODO: remove header EOL when parsing it first
-                std::string location_header = header.value.substr(0, header.value.size() - 2);
-                int last_path_part_idx = location_header.find_last_of('/');
-                printf("file_write_open found location header\n");
-                new_file_id = location_header.substr(last_path_part_idx + 1, location_header.size() - last_path_part_idx - 1);
-            }
+        if (rd.headers.find("location") != rd.headers.end()) { 
+            std::string location_header = rd.headers["location"];
+            int last_path_part_idx = location_header.find_last_of('/');
+            printf("file_write_open found location header\n");
+            new_file_id = location_header.substr(last_path_part_idx + 1, location_header.size() - last_path_part_idx - 1);
         }
         return true;
     }
