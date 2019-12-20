@@ -28,6 +28,13 @@ struct id_cache_value {
 std::string WdFs::auth_header = std::string("");
 std::unordered_map<std::string, id_cache_value> remote_id_map;
 std::unordered_map<std::string, int> subfolder_count_cache;
+std::unordered_map<std::string, std::string> temp_file_binding;
+std::unordered_map<std::string, std::string> create_opened_files;
+
+const int MY_O_RDONLY = 32768;
+const int MY_O_WRONLY = 32769;
+const int MY_O_RDWR = 32770;
+const int MY_O_APPEND = 33792;
 
 // Set the auth header of the application
 void WdFs::set_authorization_header(std::string authorization_header) {
@@ -167,6 +174,148 @@ int get_remote_file_size(std::string *file_path, std::string *auth_header) {
     return result;
 }
 
+int WdFs::release(const char* file_path, struct fuse_file_info *) {
+    LOG("[release]: Releasing file %s\n", file_path);
+    std::string str_path(file_path);
+    if (temp_file_binding.find(str_path) != temp_file_binding.end()) {
+        // File to be released is an open temp file, close the write (upload) call here
+        std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
+        std::string remote_temp_id = temp_file_binding[str_path];
+        bool close_result = file_write_close(&remote_temp_id, &auth_header);
+        if (!close_result) LOG("[release]: Remote temp file close failed\n");
+        else LOG("[release]: Remote temp file closed\n");
+        temp_file_binding.erase(str_path);
+        // Remove the original file
+        std::string original_id = get_path_remote_id(&str_path, &auth_header);
+        bool remove_result = remove_entry(&original_id, &auth_header);
+        if (!remove_result) {
+            LOG("[release]: Failed to remove old file!\n");
+            return -1;
+        }
+        // Update the ID-local cache with the new ID of the old file
+        id_cache_value val;
+        val.is_dir = false;
+        val.id = remote_temp_id;
+        remote_id_map[str_path] = val;
+        // Rename the new file
+        bool rename_result = rename_entry(&remote_temp_id, &file_name, &auth_header);
+        if (!rename_result) {
+            LOG("[release]: Failed to rename new file to old name!\n");
+            return -1;
+        }
+    } else if (create_opened_files.find(str_path) != create_opened_files.end()) {
+        // File is has been created, but hasn't been closed yet
+        std::string new_file_id = create_opened_files[str_path];
+        create_opened_files.erase(str_path);
+        bool close_result = file_write_close(&new_file_id, &auth_header);
+        if (!close_result) {
+            LOG("[release]: Failed to close created file!\n");
+            return -1;
+        }
+    }
+    return 1337; // return value is ignored
+}
+
+int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
+    LOG("[open]: Opening file %s\n", file_path);
+    LOG("[open]: File opened with %d mode\n", fi->flags);
+    // Ignore read only option as remote device is capable of handling offsets while reading
+    if (fi->flags == MY_O_RDONLY) return 0;
+    // tempfile required because remote can't write to a file after it's closed
+    LOG("[open]: File wasn't in read only mode, preloading to remote temp file...\n");
+    std::string str_path(file_path);
+    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
+    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
+    LOG("[open]: Parent folder is: %s\n", parent_path.c_str());
+    LOG("[open]: Temp file name is: %s\n", file_name.c_str());
+    std::string parent_id = get_path_remote_id(&parent_path, &auth_header);
+    LOG("[open]: Parent folder ID is: %s\n", parent_id.c_str());
+    // Load contents of remote file into the temp file
+    std::string remote_id = get_path_remote_id(&str_path, &auth_header);
+    int remote_file_size = -1;
+    if (get_file_size(&remote_id, &remote_file_size, &auth_header)) {
+        LOG("[open]: Remote file exists and has %d bytes\n", remote_file_size);
+        // Create temp file on remote
+        std::string temp_file_id;
+        bool temp_open_res = file_write_open(&parent_id, &file_name, &auth_header, &temp_file_id);
+        if (!temp_open_res) return -1;
+        // Read the remote file in chunks
+        int bytes_read = 0;
+        const int CHUNK_SIZE = 4096;
+        void *buffer = malloc(CHUNK_SIZE);
+        memset(buffer, 0, CHUNK_SIZE);
+        std::string location_hdr("/sdk/v2/files/" + temp_file_id);
+        while (bytes_read != remote_file_size) {
+            int local_read = 0;
+            bool success = read_file(&remote_id, buffer, bytes_read, CHUNK_SIZE, &local_read, &auth_header);
+            LOG("[open]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, remote_file_size);
+            if (!success) return -1;
+            bytes_read += local_read;
+            // TODO: might be better to use realloc if local_read != CHUNK_SIZE
+            void *real_data = malloc(local_read);
+            memcpy(real_data, buffer, local_read);
+            // Write file to remote temp file
+            bool write_result = write_file(&auth_header, &location_hdr, bytes_read - local_read, local_read, (char*) real_data);
+            if (!write_result) return -1;
+            free(real_data);
+        }
+        free(buffer);
+        LOG("[open]: Remote file copied to temp file on the remote filesystem\n");
+        // Bind path to temp file
+        temp_file_binding.insert(make_pair(str_path, temp_file_id));
+        LOG("[open]: Temp file binding %s=>%s cached\n", file_path, temp_file_id.c_str());
+        return 0;
+    }
+    return -1;
+}
+
+int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t offset, struct fuse_file_info *) {
+    LOG("[write]: Writing %d bytes of data at %d to %s\n", size, offset, file_path);
+    std::string str_path(file_path);
+    if (temp_file_binding.find(str_path) != temp_file_binding.end()) {
+        // We have a temp file that's open and has the contents of the real locked file
+        std::string tmp_id = temp_file_binding[str_path];
+        LOG("[write]: Tmp file found with ID: %s\n", tmp_id.c_str());
+        std::string location_hdr("/sdk/v2/files/" + tmp_id);
+        bool result = write_file(&auth_header, &location_hdr, (int)offset, (int)size, buffer);
+        if (!result) return -1;
+        LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
+        return (int)size;
+    } else {
+        // TODO: place the write outside the if statements
+        // We don't have a temp file => it's a newly created empty file that's still open for writing
+        if (create_opened_files.find(str_path) == create_opened_files.end()) {
+            LOG("[write]: Tried to write without tempfile and file's not in created_open map!\n");
+            return -1;
+        }
+        std::string location_hdr("/sdk/v2/files/" + create_opened_files[str_path]);
+        bool result = write_file(&auth_header, &location_hdr, (int)offset, (int)size, buffer);
+        if (!result) return -1;
+        LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
+        return (int)size;
+    }
+}
+
+int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
+    LOG("[create]: Creating file %s\n", file_path);
+    std::string str_path(file_path);
+    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
+    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
+    LOG("[create]: Parent folder is: %s\n", parent_path.c_str());
+    LOG("[create]: File name is: %s\n", file_name.c_str());
+    std::string parent_id = get_path_remote_id(&parent_path, &auth_header);
+    LOG("[create]: Parent folder ID is: %s\n", parent_id.c_str());
+
+    std::string new_id;
+    bool open_result = file_write_open(&parent_id, &file_name, &auth_header, &new_id);
+    if (!open_result) return -1;
+    // Cache new file ID with the create map
+    create_opened_files.insert(make_pair(str_path, new_id));
+    LOG("[create]: ID of the new file is: %s\n", new_id.c_str());
+
+    return 0;
+}
+
 // Remove a directory from the remote system
 int WdFs::rmdir(const char* dir_path) {
     LOG("[rmdir]: Removing directory%s\n", dir_path);
@@ -176,6 +325,8 @@ int WdFs::rmdir(const char* dir_path) {
     bool result = remove_entry(&remote_entry_id, &auth_header);
     if (result) {
         LOG("[rmdir]: Directory remove successful\n");
+        // Remove folder from the ID cache
+        remote_id_map.erase(str_path);
     } else {
         LOG("[rmdir]: Directory remove failed\n");
     }
@@ -191,6 +342,8 @@ int WdFs::unlink(const char* file_path) {
     bool result = remove_entry(&remote_entry_id, &auth_header);
     if (result) {
         LOG("[unlink]: File remove successful\n");
+        // Remove file from the ID cache
+        remote_id_map.erase(str_path);
     } else {
         LOG("[unlink]: File remove failed\n");
     }
@@ -236,9 +389,17 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
         st->st_nlink = 1;
         int file_size = get_remote_file_size(&str_path, &auth_header);
         LOG("[getattr]: Size of %s is %d bytes\n", path, file_size);
+        if (file_size == -1) return -ENOENT; // ID of the file is invalid or size can't be requested
         st->st_size = file_size;
     } else { // entry doesn't exist
-        return -ENOENT;
+            if (create_opened_files.find(str_path) != create_opened_files.end()) {
+                // This hack is required here, because the remote device doesn't list the file unless the write to it has been ended with file_write_close
+                // The file is kept open after the create operation, because a write call might be the next and it's not possible to write to a remote file if it's been closed
+                st->st_mode = S_IFREG | 0644;
+                st->st_nlink = 1;
+                st->st_size = 0;
+            }
+            else return -ENOENT;
     }
     return 0;
 }

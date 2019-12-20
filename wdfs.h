@@ -17,6 +17,10 @@ class WdFs : public Fusepp::Fuse<WdFs> {
         static int mkdir(const char* path, mode_t mode);
         static int unlink(const char* file_path);
         static int rmdir(const char* dir_path);
+        static int write(const char* file_path, const char* buffer, size_t size, off_t offset, struct fuse_file_info *);
+        static int create(const char* file_path, mode_t mode, struct fuse_file_info *);
+        static int open(const char* file_path, struct fuse_file_info *);
+        static int release(const char* file_path, struct fuse_file_info *);
         static void set_authorization_header(std::string authorization_header);
 };
 

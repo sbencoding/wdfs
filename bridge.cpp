@@ -16,6 +16,7 @@ struct HttpHeader {
 // Data to pass around in CURL header callback
 struct ResponseData {
     // Header key value pairs
+    // TODO: better performance with an unordered_map probably
     std::vector<HttpHeader> headers;
     // Status code of the request
     int status_code;
@@ -66,6 +67,7 @@ static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, b
     return size * nmemb;
 }
 
+// Start an activity on the remote server and return the activity tag
 bool login(const char* username, const char* password, std::string *sessionId) {
     /*        const authUrl = 'https://wdc.auth0.com/oauth/ro';
         const wdcAuth0ClientID = '56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk';
@@ -338,7 +340,7 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, std:
     sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files?resolveNameConflict=true", wdhost);
     std::string response_body;
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
         // set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, request_url);
         // set header callback
@@ -386,7 +388,7 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, std:
         fprintf(stderr, "Invalid parameters in the request");
         fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
     } else if (rd.status_code == 201) {
-        printf("mkdir request finished with status code 200\n");
+        printf("mkdir request finished with status code 201\n");
         for (auto header : rd.headers) {
             // printf("%s: %s\n", header.name.c_str(), header.value.c_str());
             if (header.name == "location") {
@@ -436,7 +438,7 @@ bool remove_entry(std::string *entry_id, std::string *auth_token) {
     sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s", wdhost, entry_id->c_str());
     std::string response_body;
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
         // set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, request_url);
         // set header callback
@@ -493,7 +495,7 @@ bool read_file(std::string *file_id, void* buffer, int offset, int size, int *by
     sprintf(range_header, "Range: bytes=%d-%d", offset, offset + size - 1);
     std::string response_body;
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
         // set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, request_url);
         // set header callback
@@ -532,6 +534,10 @@ bool read_file(std::string *file_id, void* buffer, int offset, int size, int *by
         return false;
     } else if (rd.status_code == 206) {
         printf("read request finished with status code 206\n");
+    } else if (rd.status_code == 416) {
+        // Requested range is wrong
+        *bytes_read = 0;
+        printf("read request was for an empty file\n");
     } else {
         fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
         return false;
@@ -566,7 +572,7 @@ bool get_file_size(std::string *file_id, int *file_size, std::string *auth_token
     sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s?pretty=false&fields=size", wdhost, file_id->c_str());
     std::string response_body;
     if (curl) {
-        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        //curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
         // set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, request_url);
         // set header callback
@@ -608,6 +614,297 @@ bool get_file_size(std::string *file_id, int *file_size, std::string *auth_token
         return false;
     }
     return true;
+}
+
+bool file_write_close(std::string *new_file_id, std::string *auth_token) {
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[300 + new_file_id->size()];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/resumable/content?done=true", wdhost, new_file_id->c_str());
+    printf("file_write_close request URL is: %s\n", request_url);
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+        // set request method to delete
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+        return false;
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+        return false;
+    } else if (rd.status_code == 204) {
+        printf("file_write_close request finished with status code 204\n");
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool file_write_open(std::string *parent_id, std::string *file_name, std::string *auth_token, std::string *new_file_id) {
+   //const startUpload = (activityID) => {
+        //const initUploadUrl = `https://${wdHost}.remotewd.com/sdk/v2/files/resumable?resolveNameConflict=1&done=false`;
+        //request.post(initUploadUrl, {
+            //headers: {
+                //'authorization': authToken,
+                //'x-activity-tag': activityID,
+            //},
+            //multipart: [
+                //{
+                    //body: JSON.stringify({ // Request copied from a file upload request to the initUploadUrl endpoint
+                        //name: path.basename(pathToFile),
+                        //parentID: subPath,
+                        //mTime: getFormattedTime(),
+                    //})
+                //},
+                //{ body: '' }
+            //]
+        //}, (error, response) => {
+            //if (response.statusCode === 401) {
+                //reportDone({ success: false, error: undefined, session: false });
+                //return;
+            //}
+            //if (error) {
+                //log.fatal('Something went wrong');
+                //log.debug('Status code: ' + response.statusCode);
+                //log.error(error);
+                //reportDone({ success: false, error: error, session: true });
+                //return;
+            //}
+            //const fileUrl = `https://${wdHost}.remotewd.com${response.headers['location']}/resumable/content`;
+            //uploadManual({ authorization: authToken, xActivityTag: activityID, url: fileUrl }, reportCompleted, reportDone, pathToFile); // Upload the file to the server
+        //});
+    //};
+
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[200];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/resumable?resolveNameConflict=0&done=false", wdhost);
+    std::string response_body;
+    if (curl) {
+        // curl_easy_setopt(curl, curlopt_verbose, 1l);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+
+        // set request headers
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        chunk = curl_slist_append(chunk, "Content-Type: multipart/related; boundary=287032381131322");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // Write request body
+        // TODO: add legit creation + modification time
+        json req = {
+            {"name", file_name->c_str()},
+            {"parentID", parent_id->c_str()},
+            {"mTime", "2019-12-12T12:12:12+02:00"},
+        };
+
+        std::string body_header("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n");
+        std::string body_content = req.dump();
+        std::string body_footer("\r\n--287032381131322--");
+        std::string rbody(body_header + body_content + body_footer);
+
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) rbody.size());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, rbody.c_str());
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+    } else if (rd.status_code == 201) {
+        for (HttpHeader header : rd.headers) {
+            if (header.name == "location") {
+                // -2 to trim \r\n at the end of the header value
+                // TODO: remove header EOL when parsing it first
+                std::string location_header = header.value.substr(0, header.value.size() - 2);
+                int last_path_part_idx = location_header.find_last_of('/');
+                printf("file_write_open found location header\n");
+                *new_file_id = location_header.substr(last_path_part_idx + 1, location_header.size() - last_path_part_idx - 1);
+            }
+        }
+        return true;
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+    }
+    return false;
+}
+
+bool write_file(std::string *auth_token, std::string *file_location, int offset, int size, const char *buffer) {
+    //const fileUrl = `https://${wdHost}.remotewd.com${response.headers['location']}/resumable/content?offset=444&done=false`;
+    // use PUT request
+
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[100 + file_location->size()];
+    sprintf(request_url, "https://%s.remotewd.com%s/resumable/content?offset=%d&done=false", wdhost, file_location->c_str(), offset);
+    printf("write_file request URL is: %s\n", request_url);
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+        // set request method to delete
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, "PUT");
+
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // Write request body
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) size);
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, buffer);
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+        return false;
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+        return false;
+    } else if (rd.status_code == 204) {
+        printf("write_file request finished with status code 204\n");
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+        return false;
+    }
+    return true;
+}
+
+bool rename_entry(std::string *entry_id, std::string *new_name, std::string *auth_token) {
+    CURL *curl;
+    CURLcode res;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+
+    curl = curl_easy_init();
+    ResponseData rd;
+    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[70 + strlen(wdhost)];
+    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/patch", wdhost, entry_id->c_str());
+    std::string response_body;
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_VERBOSE, 1L);
+        // set url of the request
+        curl_easy_setopt(curl, CURLOPT_URL, request_url);
+        // set header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
+        // set object to pass to header callback
+        curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
+
+        // set request header
+        struct curl_slist *chunk = NULL;
+        chunk = curl_slist_append(chunk, auth_token->c_str());
+        chunk = curl_slist_append(chunk, "Content-Type: text/plain;charset=UTF-8");
+        curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
+
+        // Write request body
+        // TODO: add modification and creation time too
+        json req = {
+            {"name", new_name->c_str()},
+        };
+
+        std::string rbody = req.dump();
+
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDSIZE, (long) rbody.size());
+        curl_easy_setopt(curl, CURLOPT_POSTFIELDS, rbody.c_str());
+
+        // collect response body
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_string);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_body);
+
+        res = curl_easy_perform(curl);
+        if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
+        curl_slist_free_all(chunk);
+        curl_easy_cleanup(curl);
+    }
+
+    curl_global_cleanup();
+    if (rd.status_code == 401) {
+        fprintf(stderr, "the specified username or password is wrong\n%s\n", response_body.c_str());
+        fprintf(stderr, "authentication was done with token: %s\n", auth_token->c_str());
+    } else if (rd.status_code == 400) {
+        fprintf(stderr, "Invalid parameters in the request");
+        fprintf(stderr, "Response body: \n%s\n", response_body.c_str());
+    } else if (rd.status_code == 204) {
+        printf("rename_entry request finished with status code 204\n");
+        return true;
+    } else {
+        fprintf(stderr, "unkown error: http(%d): \n%s\n", rd.status_code, response_body.c_str());
+    }
+    return false;
 }
 
 // Make a get request to the specified url
