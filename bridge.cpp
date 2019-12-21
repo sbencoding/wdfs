@@ -2,6 +2,7 @@
 #include <curl/curl.h>
 #include <string>
 #include <vector>
+#include <time.h>
 #include "json.hpp"
 #include "bridge.hpp"
 
@@ -44,6 +45,33 @@ void set_wd_host(const char *wdhost) {
     } else request_start = (char *) malloc(str_size);
     // Construct the URL start
     sprintf(request_start, "https://%s.remotewd.com/", wdhost);
+}
+
+std::string get_formatted_time() {
+    // Get current time
+    time_t t;
+    struct tm *tmp;
+    t = time(NULL);
+    tmp = localtime(&t);
+    if (tmp == NULL) {
+        fprintf(stderr, "[get_formatted_time]: Failed to get local time\n");
+        return std::string("");
+    }
+
+    // Get date & time and UTC offset of current time
+    char formatted_result[100];
+    char offset_result[6];
+    if (strftime(formatted_result, sizeof(formatted_result), "%Y-%m-%dT%H:%M:%S", tmp) == 0) {
+        fprintf(stderr, "[get_formatted_time]: strftime call failed for date nad time\n");
+    }
+    if (strftime(offset_result, sizeof(offset_result), "%z", tmp) == 0) {
+        fprintf(stderr, "[get_formatted_time]: strftime call failed for offset\n");
+    }
+
+    // Reformat the offset to RFC3339
+    std::string str_offset(offset_result);
+    str_offset.insert(3, ":");
+    return std::string(formatted_result + str_offset);
 }
 
 // Get status code and collect headers
@@ -387,11 +415,11 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
     };
 
     // Write request body
-    // TODO: add legit creation + modification time
+    std::string current_time = get_formatted_time();
     json req = {
         {"name", file_name.c_str()},
         {"parentID", parent_id.c_str()},
-        {"mTime", "2019-12-12T12:12:12+02:00"},
+        {"mTime", current_time.c_str()},
     };
 
     std::string body_header("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n");
@@ -442,9 +470,10 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
     };
 
     // Write request body
-    // TODO: add modification and creation time too
+    std::string current_time = get_formatted_time();
     json req = {
         {"name", new_name.c_str()},
+        {"mTime", current_time.c_str()}
     };
 
     std::string rbody = req.dump();
