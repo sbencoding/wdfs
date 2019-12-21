@@ -110,7 +110,7 @@ static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, b
 }
 
 // Initialize a basic request
-static CURL* request_base(const char* method, const char* url, const std::vector<http_header> &headers, const char *request_body, long size, response_data &rd, struct curl_slist *chunk) {
+static CURL* request_base(const char* method, const char* url, const std::vector<std::string> &headers, const char *request_body, long size, response_data &rd, struct curl_slist *chunk) {
     CURL *curl;
     curl_global_init(CURL_GLOBAL_DEFAULT);
     
@@ -126,11 +126,9 @@ static CURL* request_base(const char* method, const char* url, const std::vector
         // Set request method
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
 
-        // Set request header
-        for (http_header header : headers) {
-            // TODO: pass headers as vector of full strings for better performance
-            std::string header_string(header.name + ":" + header.value);
-            chunk = curl_slist_append(chunk, header_string.c_str());
+        // Set request headers
+        for (std::string header : headers) {
+            chunk = curl_slist_append(chunk, header.c_str());
         }
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
 
@@ -153,7 +151,7 @@ static void request_free(CURL *curl, struct curl_slist *chunk, CURLcode res) {
 }
 
 // Perform a single request and get string response
-static response_data make_request(const char* method, const char* url, const std::vector<http_header> &headers, const char *request_body, long size) {
+static response_data make_request(const char* method, const char* url, const std::vector<std::string> &headers, const char *request_body, long size) {
     CURLcode res;
     response_data rd;
     std::string response_body;
@@ -203,27 +201,27 @@ bool login(const char* username, const char* password, std::string &session_id) 
     };
 
     std::string rbody = req.dump();
-    std::vector<http_header> hdrs {
-        http_header("Content-Type", "application/json")
+    std::vector<std::string> hdrs {
+        "Content-Type: application/json"
     };
     response_data resp = make_request("POST", auth_url,  hdrs, rbody.c_str(), (long)rbody.size());
     if (generic_handler(resp.status_code, resp.response_body)) { 
         auto json_response = json::parse(resp.response_body);
         std::string id_token = json_response["id_token"];
-        session_id.assign("Bearer " + id_token);
+        session_id.assign("Authorization: Bearer " + id_token);
         return true;
     }
     return false;
 }
 
 // List entries on the remote device
-bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> *entries) {
+bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries) {
     // TODO: write separate application or guide for enumerating/getting device IDs
     //const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
     char request_url[93 + strlen(path) + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", request_start, path);
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -238,7 +236,7 @@ bool list_entries(const char* path, const std::string &auth_token, std::vector<e
             entry.id = id;
             entry.name = name;
             entry.is_dir = is_dir;
-            entries->push_back(entry);
+            entries.push_back(entry);
         }
         return true;
     }
@@ -246,12 +244,12 @@ bool list_entries(const char* path, const std::string &auth_token, std::vector<e
 }
 
 // List entries on the remote system for multiple entries
-bool list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> *entries) {
+bool list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> &entries) {
     char request_url[102 + strlen(ids) + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", request_start, ids);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -268,7 +266,7 @@ bool list_entries_multiple(const char* ids, const std::string &auth_token, std::
             entry.name = name;
             entry.is_dir = is_dir;
             entry.parent_id = parent_id;
-            entries->push_back(entry);
+            entries.push_back(entry);
         }
         return true;
     }
@@ -280,9 +278,9 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, cons
     char request_url[38 + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/files?resolveNameConflict=true", request_start);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token),
-        http_header("Content-Type", "multipart/related; boundary=287032381131322")
+    std::vector<std::string> headers {
+        auth_token,
+        "Content-Type: multipart/related; boundary=287032381131322"
     };
 
     json req = {
@@ -313,8 +311,8 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, cons
 bool remove_entry(const std::string &entry_id, const std::string &auth_token) {
     char request_url[14 + strlen(request_start) + entry_id.size()];
     sprintf(request_url, "%ssdk/v2/files/%s", request_start, entry_id.c_str());
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
     response_data rd = make_request("DELETE", request_url, headers, NULL, 0L);
     if (generic_handler(rd.status_code, rd.response_body)) {
@@ -333,12 +331,12 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
     char request_url[36 + strlen(request_start) + file_id.size()];
     sprintf(request_url, "%ssdk/v2/files/%s/content?download=true", request_start, file_id.c_str());
 
-    char range_header[60];
-    sprintf(range_header, "bytes=%d-%d", offset, offset + size - 1);
+    char range_header[67];
+    sprintf(range_header, "Range: bytes=%d-%d", offset, offset + size - 1);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token),
-        http_header("Range", range_header),
+    std::vector<std::string> headers {
+        auth_token,
+        std::string(range_header)
     };
 
     CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
@@ -369,8 +367,8 @@ bool get_file_size(const std::string &file_id, int &file_size, const std::string
     char request_url[39 + strlen(request_start) + file_id.size()];
     sprintf(request_url, "%ssdk/v2/files/%s?pretty=false&fields=size", request_start, file_id.c_str());
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -391,8 +389,8 @@ bool file_write_close(const std::string &new_file_id, const std::string &auth_to
     sprintf(request_url, "%ssdk/v2/files/%s/resumable/content?done=true", request_start, new_file_id.c_str());
     printf("file_write_close request URL is: %s\n", request_url);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
 
     response_data rd = make_request("PUT", request_url, headers, NULL, 0L);
@@ -409,9 +407,9 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
     char request_url[54 + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/files/resumable?resolveNameConflict=0&done=false", request_start);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token),
-        http_header("Content-Type", "multipart/related; boundary=287032381131322")
+    std::vector<std::string> headers {
+        auth_token,
+        "Content-Type: multipart/related; boundary=287032381131322"
     };
 
     // Write request body
@@ -446,8 +444,8 @@ bool write_file(const std::string &auth_token, const std::string &file_location,
     char request_url[50 + strlen(request_start) + file_location.size()];
     sprintf(request_url, "%s%s/resumable/content?offset=%d&done=false", request_start, file_location.c_str(), offset);
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token)
+    std::vector<std::string> headers {
+        auth_token
     };
 
     response_data rd = make_request("PUT", request_url, headers, buffer, (long) size);
@@ -464,9 +462,9 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
     char request_url[20 + strlen(request_start) + entry_id.size()];
     sprintf(request_url, "%ssdk/v2/files/%s/patch", request_start, entry_id.c_str());
 
-    std::vector<http_header> headers {
-        http_header("Authorization", auth_token),
-        http_header("Content-Type", "text/plain;charset=UTF-8")
+    std::vector<std::string> headers {
+        auth_token,
+        "Content-Type: text/plain;charset=UTF-8"
     };
 
     // Write request body

@@ -61,7 +61,7 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
         if (!remote_id_map[*path].is_dir) return false;
         std::string entryId = remote_id_map[*path].id;
         std::vector<entry_data> cache_results;
-        list_entries(entryId.c_str(), auth_header, &cache_results);
+        list_entries(entryId.c_str(), auth_header, cache_results);
         LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
         if (result != NULL) {
             for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
@@ -89,6 +89,7 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
 
                 if (currentEntry.name == current) {
                     // TODO: should we cache files we encounter or just the path parts we go through?
+                    // TODO: ^^ check if there is a way to constantly check for changes and build a local cache of the remote state instead of fetching it every time
                     entry_found = true;
                     currentId = currentEntry.id;
                     id_cache_value cache_value;
@@ -107,7 +108,7 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
         }
 
         currentItems.clear();
-        list_entries(currentId.c_str(), auth_header, &currentItems);
+        list_entries(currentId.c_str(), auth_header, currentItems);
     }
 
     if (result != NULL) {
@@ -427,7 +428,7 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
 
         subfolder_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
         std::vector<entry_data> subfolders;
-        list_entries_multiple(subfolder_id_param.c_str(), auth_header, &subfolders);
+        list_entries_multiple(subfolder_id_param.c_str(), auth_header, subfolders);
 
         for (auto entry : subfolders) {
             if (entry.is_dir) subfolder_count_cache[entry.parent_id]++;
