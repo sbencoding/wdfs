@@ -63,8 +63,10 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
         std::vector<entry_data> cache_results;
         list_entries(entryId.c_str(), auth_header, &cache_results);
         LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
-        for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
-            result->push_back(*it);
+        if (result != NULL) {
+            for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
+                result->push_back(*it);
+            }
         }
         return 1;
     }
@@ -108,8 +110,10 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
         list_entries(currentId.c_str(), auth_header, &currentItems);
     }
 
-    for (auto it = currentItems.begin(); it != currentItems.end(); ++it) {
-        result->push_back(*it);
+    if (result != NULL) {
+        for (auto it = currentItems.begin(); it != currentItems.end(); ++it) {
+            result->push_back(*it);
+        }
     }
 
     return 1;
@@ -149,8 +153,7 @@ std::string get_path_remote_id(std::string* path, const std::string &auth_header
         return remote_id_map[*path].id;
     }
     LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
-    std::vector<entry_data> tmp; // TODO: check if there's a way to skip the vector param if not needed by caller
-    int expand_result = list_entries_expand(path, &tmp, auth_header);
+    int expand_result = list_entries_expand(path, NULL, auth_header);
     LOG("[get_remote_id]: expand result: %d\n", expand_result);
     if (expand_result == 1 || expand_result == 0) { // Entry exists on server
         return get_path_remote_id(path, auth_header); // Will read from cache
@@ -160,8 +163,7 @@ std::string get_path_remote_id(std::string* path, const std::string &auth_header
 }
 
 // Get the size of a file on the remote system
-int get_remote_file_size(std::string *file_path, const std::string &auth_header) {
-    // TODO: name this method better, it's almost the same as the function in bridge.cpp
+int path_get_size(std::string *file_path, const std::string &auth_header) {
     std::string file_id = get_path_remote_id(file_path, auth_header);
     if (file_id.empty()) return -1;
     int result = 0;
@@ -247,13 +249,9 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
             LOG("[open]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, remote_file_size);
             if (!success) return -1;
             bytes_read += local_read;
-            // TODO: might be better to use realloc if local_read != CHUNK_SIZE
-            void *real_data = malloc(local_read);
-            memcpy(real_data, buffer, local_read);
             // Write file to remote temp file
-            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) real_data);
+            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
             if (!write_result) return -1;
-            free(real_data);
         }
         free(buffer);
         LOG("[open]: Remote file copied to temp file on the remote filesystem\n");
@@ -268,28 +266,24 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
 int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t offset, struct fuse_file_info *) {
     LOG("[write]: Writing %d bytes of data at %d to %s\n", size, offset, file_path);
     std::string str_path(file_path);
+    std::string file_id;
     if (temp_file_binding.find(str_path) != temp_file_binding.end()) {
         // We have a temp file that's open and has the contents of the real locked file
-        std::string tmp_id = temp_file_binding[str_path];
-        LOG("[write]: Tmp file found with ID: %s\n", tmp_id.c_str());
-        std::string location_hdr("sdk/v2/files/" + tmp_id);
-        bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
-        if (!result) return -1;
-        LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
-        return (int)size;
+        file_id = temp_file_binding[str_path];
     } else {
-        // TODO: place the write outside the if statements
         // We don't have a temp file => it's a newly created empty file that's still open for writing
         if (create_opened_files.find(str_path) == create_opened_files.end()) {
             LOG("[write]: Tried to write without tempfile and file's not in created_open map!\n");
             return -1;
         }
-        std::string location_hdr("sdk/v2/files/" + create_opened_files[str_path]);
-        bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
-        if (!result) return -1;
-        LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
-        return (int)size;
+        file_id = create_opened_files[str_path];
     }
+    LOG("[write]: Write target file found with ID: %s\n", file_id.c_str());
+    std::string location_hdr("sdk/v2/files/" + file_id);
+    bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
+    if (!result) return -1;
+    LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
+    return (int)size;
 }
 
 int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
@@ -383,7 +377,7 @@ int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
         LOG("[getattr] Path %s is a file\n", path);
         st->st_mode = S_IFREG | 0644;
         st->st_nlink = 1;
-        int file_size = get_remote_file_size(&str_path, auth_header);
+        int file_size = path_get_size(&str_path, auth_header);
         LOG("[getattr]: Size of %s is %d bytes\n", path, file_size);
         if (file_size == -1) return -ENOENT; // ID of the file is invalid or size can't be requested
         st->st_size = file_size;
