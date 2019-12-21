@@ -31,6 +31,21 @@ struct buffer_result {
     void *buffer;
 };
 
+// Store the URL start with the given remote device endpoint
+char *request_start = NULL;
+
+// Set the remote host for the requests
+void set_wd_host(const char *wdhost) {
+    // Size of the URL start + 1 for zero termination
+    int str_size = 23 + strlen(wdhost);
+    // Allocate / reallocated the size of the buffer
+    if (request_start != NULL) {
+        request_start = (char *) realloc(request_start, str_size);
+    } else request_start = (char *) malloc(str_size);
+    // Construct the URL start
+    sprintf(request_start, "https://%s.remotewd.com/", wdhost);
+}
+
 // Get status code and collect headers
 static size_t header_callback(char *buffer, size_t size, size_t nitems, void *userdata) {
     std::string buf(buffer);
@@ -85,6 +100,7 @@ static CURL* request_base(const char* method, const char* url, const std::vector
 
         // Set request header
         for (http_header header : headers) {
+            // TODO: pass headers as vector of full strings for better performance
             std::string header_string(header.name + ":" + header.value);
             chunk = curl_slist_append(chunk, header_string.c_str());
         }
@@ -174,11 +190,10 @@ bool login(const char* username, const char* password, std::string &session_id) 
 
 // List entries on the remote device
 bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> *entries) {
-    // TODO: device ID is probably not the same for everyone
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    // TODO: is there better way to concat strings?
-    char request_url[300];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", wdhost, path);
+    // TODO: write separate application or guide for enumerating/getting device IDs
+    //const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
+    char request_url[93 + strlen(path) + strlen(request_start)];
+    sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", request_start, path);
     std::vector<http_header> headers {
         http_header("Authorization", auth_token)
     };
@@ -204,9 +219,8 @@ bool list_entries(const char* path, const std::string &auth_token, std::vector<e
 
 // List entries on the remote system for multiple entries
 bool list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> *entries) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[300 + strlen(ids)];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", wdhost, ids);
+    char request_url[102 + strlen(ids) + strlen(request_start)];
+    sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", request_start, ids);
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token)
@@ -235,9 +249,8 @@ bool list_entries_multiple(const char* ids, const std::string &auth_token, std::
 
 // Create a new folder on the remote system
 std::string make_dir(const char* folder_name, const char* parent_folder_id, const std::string &auth_token) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[59 + strlen(wdhost)];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files?resolveNameConflict=true", wdhost);
+    char request_url[38 + strlen(request_start)];
+    sprintf(request_url, "%ssdk/v2/files?resolveNameConflict=true", request_start);
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token),
@@ -270,9 +283,8 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, cons
 
 // Remove an entry from the remote system
 bool remove_entry(const std::string &entry_id, const std::string &auth_token) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[59 + strlen(wdhost) + entry_id.size()];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s", wdhost, entry_id.c_str());
+    char request_url[14 + strlen(request_start) + entry_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s", request_start, entry_id.c_str());
     std::vector<http_header> headers {
         http_header("Authorization", auth_token)
     };
@@ -290,9 +302,8 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
     CURLcode res;
     response_data rd;
     struct curl_slist *chunk = NULL;
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[59 + strlen(wdhost) + file_id.size()];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/content?download=true", wdhost, file_id.c_str());
+    char request_url[36 + strlen(request_start) + file_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s/content?download=true", request_start, file_id.c_str());
 
     char range_header[60];
     sprintf(range_header, "bytes=%d-%d", offset, offset + size - 1);
@@ -327,9 +338,8 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
 
 // Get the size of a file on the remote system
 bool get_file_size(const std::string &file_id, int &file_size, const std::string &auth_token) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[59 + strlen(wdhost) + file_id.size()];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s?pretty=false&fields=size", wdhost, file_id.c_str());
+    char request_url[39 + strlen(request_start) + file_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s?pretty=false&fields=size", request_start, file_id.c_str());
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token)
@@ -349,9 +359,8 @@ bool get_file_size(const std::string &file_id, int &file_size, const std::string
 
 // Close an open file on the remote system
 bool file_write_close(const std::string &new_file_id, const std::string &auth_token) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[300 + new_file_id.size()];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/resumable/content?done=true", wdhost, new_file_id.c_str());
+    char request_url[42 + strlen(request_start) + new_file_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s/resumable/content?done=true", request_start, new_file_id.c_str());
     printf("file_write_close request URL is: %s\n", request_url);
 
     std::vector<http_header> headers {
@@ -369,9 +378,8 @@ bool file_write_close(const std::string &new_file_id, const std::string &auth_to
 
 // Open a file on the remote system
 bool file_write_open(const std::string &parent_id, const std::string &file_name, const std::string &auth_token, std::string &new_file_id) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[200];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/resumable?resolveNameConflict=0&done=false", wdhost);
+    char request_url[54 + strlen(request_start)];
+    sprintf(request_url, "%ssdk/v2/files/resumable?resolveNameConflict=0&done=false", request_start);
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token),
@@ -407,9 +415,8 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
 
 // Write bytes to a file on the remote system
 bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[100 + file_location.size()];
-    sprintf(request_url, "https://%s.remotewd.com%s/resumable/content?offset=%d&done=false", wdhost, file_location.c_str(), offset);
+    char request_url[50 + strlen(request_start) + file_location.size()];
+    sprintf(request_url, "%s%s/resumable/content?offset=%d&done=false", request_start, file_location.c_str(), offset);
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token)
@@ -426,9 +433,8 @@ bool write_file(const std::string &auth_token, const std::string &file_location,
 
 // Rename a file on the remote system
 bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token) {
-    const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
-    char request_url[70 + strlen(wdhost)];
-    sprintf(request_url, "https://%s.remotewd.com/sdk/v2/files/%s/patch", wdhost, entry_id.c_str());
+    char request_url[20 + strlen(request_start) + entry_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s/patch", request_start, entry_id.c_str());
 
     std::vector<http_header> headers {
         http_header("Authorization", auth_token),

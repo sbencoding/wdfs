@@ -240,7 +240,7 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
         const int CHUNK_SIZE = 4096;
         void *buffer = malloc(CHUNK_SIZE);
         memset(buffer, 0, CHUNK_SIZE);
-        std::string location_hdr("/sdk/v2/files/" + temp_file_id);
+        std::string location_hdr("sdk/v2/files/" + temp_file_id);
         while (bytes_read != remote_file_size) {
             int local_read = 0;
             bool success = read_file(remote_id, buffer, bytes_read, CHUNK_SIZE, local_read, auth_header);
@@ -272,7 +272,7 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
         // We have a temp file that's open and has the contents of the real locked file
         std::string tmp_id = temp_file_binding[str_path];
         LOG("[write]: Tmp file found with ID: %s\n", tmp_id.c_str());
-        std::string location_hdr("/sdk/v2/files/" + tmp_id);
+        std::string location_hdr("sdk/v2/files/" + tmp_id);
         bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
         if (!result) return -1;
         LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
@@ -284,7 +284,7 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
             LOG("[write]: Tried to write without tempfile and file's not in created_open map!\n");
             return -1;
         }
-        std::string location_hdr("/sdk/v2/files/" + create_opened_files[str_path]);
+        std::string location_hdr("sdk/v2/files/" + create_opened_files[str_path]);
         bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
         if (!result) return -1;
         LOG("[write]: %d bytes written to %s\n", (int)size, file_path);

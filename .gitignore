@@ -3,4 +3,5 @@ Fusepp/
 sfs2
 fs_mount/
 credentials.txt
+devid.txt
 .clang_complete
