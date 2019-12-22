@@ -8,7 +8,7 @@ struct entry_data {
     std::string parent_id;
 };
 
-bool login(const char* username, const char* password, std::string &session_id);
+bool login(const char* username, const char* password, std::string &session_id, std::string *access_token);
 bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries);
 bool list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> &entries);
 std::string make_dir(const char* folder_name, const char* parent_id, const std::string &auth_header);
@@ -20,3 +20,5 @@ bool file_write_close(const std::string &new_file_id, const std::string &auth_to
 bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer);
 bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token);
 void set_wd_host(const char* host);
+bool auth0_get_userid(const std::string &auth_token, std::string &user_id);
+bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list);

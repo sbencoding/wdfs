@@ -150,6 +150,21 @@ static void request_free(CURL *curl, struct curl_slist *chunk, CURLcode res) {
     curl_global_cleanup();
 }
 
+static std::string encode_url_part(const char* url_part) {
+    // Init curl
+    CURL *curl;
+    curl_global_init(CURL_GLOBAL_DEFAULT);
+    curl = curl_easy_init();
+    // Escape URL part
+    char *escaped = curl_easy_escape(curl, url_part, strlen(url_part));
+    std::string str_escaped(escaped);
+    // Free char pointer and curl
+    curl_free(escaped);
+    curl_easy_cleanup(curl);
+    curl_global_cleanup();
+    return str_escaped;
+}
+
 // Perform a single request and get string response
 static response_data make_request(const char* method, const char* url, const std::vector<std::string> &headers, const char *request_body, long size) {
     CURLcode res;
@@ -187,7 +202,7 @@ bool generic_handler(int status_code, std::string &response_body) {
 }
 
 // Login to the remote device
-bool login(const char* username, const char* password, std::string &session_id) {
+bool login(const char* username, const char* password, std::string &session_id, std::string *access_token = NULL) {
     const char* auth_url = "https://wdc.auth0.com/oauth/ro";
     const char* wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
     json req = {
@@ -209,6 +224,10 @@ bool login(const char* username, const char* password, std::string &session_id) 
         auto json_response = json::parse(resp.response_body);
         std::string id_token = json_response["id_token"];
         session_id.assign("Authorization: Bearer " + id_token);
+        if (access_token != NULL) {
+            std::string acc_token = json_response["access_token"];
+            access_token->assign("Authorization: Bearer " + acc_token);
+        }
         return true;
     }
     return false;
@@ -216,8 +235,6 @@ bool login(const char* username, const char* password, std::string &session_id) 
 
 // List entries on the remote device
 bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries) {
-    // TODO: write separate application or guide for enumerating/getting device IDs
-    //const char* wdhost = "device-local-6147bab3-b7b2-4ebc-93b4-a8c337829d45";
     char request_url[93 + strlen(path) + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", request_start, path);
     std::vector<std::string> headers {
@@ -485,3 +502,45 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
     return false;
 }
 
+// Get the auth0 userid of the user
+bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
+    const char *request_url = "https://wdc.auth0.com/userinfo";
+    std::vector<std::string> headers {
+        auth_token
+    };
+
+    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+    if (generic_handler(rd.status_code, rd.response_body)) {
+        auto json_response = json::parse(rd.response_body);
+        std::string id_token = json_response["user_id"];
+        user_id = id_token;
+        return true;
+    }
+    return false;
+}
+
+// Get user devices with their names and their IDs
+bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list) {
+    //https://device.mycloud.com/device/v1/user/{auth0_user_id}
+
+    char request_url[43 + user_id.size()];
+    std::string escaped_user_id = encode_url_part(user_id.c_str());
+    sprintf(request_url, "https://device.mycloud.com/device/v1/user/%s", escaped_user_id.c_str());
+
+    std::vector<std::string> headers {
+        auth_token
+    };
+
+    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+    if (generic_handler(rd.status_code, rd.response_body)) {
+        auto json_response = json::parse(rd.response_body);
+        auto data_obj = json_response["data"];
+        for (int i = 0; i < data_obj.size(); i++) {
+            std::string device_id = data_obj[i]["deviceId"];
+            std::string device_name = data_obj[i]["name"];
+            device_list.push_back(make_pair(device_id, device_name));
+        }
+        return true;
+    }
+    return false;
+}
