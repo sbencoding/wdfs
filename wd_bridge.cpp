@@ -17,7 +17,7 @@ int main (int argc, char *argv[]) {
     // Set the host to send requests to
     set_wd_host(wdhost);
 
-    if (!login(username, password, authorization_header)) {
+    if (!login(username, password, authorization_header, NULL)) {
         fprintf(stderr, "Login failed... shutting down\n");
         return 1;
     }

@@ -32,6 +32,9 @@ struct buffer_result {
     void *buffer;
 };
 
+// Map request urls to etags
+std::unordered_map<std::string, std::string> etag_mapping;
+
 // Store the URL start with the given remote device endpoint
 char *request_start = NULL;
 
@@ -202,7 +205,7 @@ bool generic_handler(int status_code, std::string &response_body) {
 }
 
 // Login to the remote device
-bool login(const char* username, const char* password, std::string &session_id, std::string *access_token = NULL) {
+bool login(const char* username, const char* password, std::string &session_id, std::string *access_token) {
     const char* auth_url = "https://wdc.auth0.com/oauth/ro";
     const char* wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
     json req = {
@@ -234,34 +237,50 @@ bool login(const char* username, const char* password, std::string &session_id, 
 }
 
 // List entries on the remote device
-bool list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries) {
-    char request_url[93 + strlen(path) + strlen(request_start)];
-    sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name&pretty=false&orderBy=name&order=asc;", request_start, path);
+request_result list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries) {
+    char request_url[98 + strlen(path) + strlen(request_start)];
+    sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name,size&pretty=false&orderBy=name&order=asc;", request_start, path);
     std::vector<std::string> headers {
         auth_token
     };
 
+    std::string str_url(request_url);
+    if (etag_mapping.find(str_url) != etag_mapping.end()) {
+        // We have a previous ETag, add if-none-match to the headers
+        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+    }
+
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
+    if (rd.status_code == 304) {
+        // Entries haven't changed since last run
+        return REQUEST_CACHED;
+    } else if (generic_handler(rd.status_code, rd.response_body)) {
+        // Update ETag mapping
+        if (rd.headers.find("etag") != rd.headers.end()) {
+            etag_mapping[str_url] = rd.headers["etag"];
+        }
         auto json_response = json::parse(rd.response_body);
         auto folder_contents = json_response["files"];
         for (int i = 0; i < folder_contents.size(); i++) {
             std::string id = folder_contents[i]["id"];
             std::string name = folder_contents[i]["name"];
             bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
+            int size = 0;
+            if (folder_contents[i]["size"] != nullptr) size = folder_contents[i]["size"];
             entry_data entry;
             entry.id = id;
             entry.name = name;
             entry.is_dir = is_dir;
+            entry.size = size;
             entries.push_back(entry);
         }
-        return true;
+        return REQUEST_SUCCESS;
     }
-    return false;
+    return REQUEST_FAILED;
 }
 
 // List entries on the remote system for multiple entries
-bool list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> &entries) {
+request_result list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> &entries) {
     char request_url[102 + strlen(ids) + strlen(request_start)];
     sprintf(request_url, "%ssdk/v2/filesSearch/parents?ids=%s&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", request_start, ids);
 
@@ -269,8 +288,21 @@ bool list_entries_multiple(const char* ids, const std::string &auth_token, std::
         auth_token
     };
 
+    std::string str_url(request_url);
+    if (etag_mapping.find(str_url) != etag_mapping.end()) {
+        // We have a previous ETag, add if-none-match to the headers
+        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+    }
+
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
+    if (rd.status_code == 304) {
+        return REQUEST_CACHED;
+    } else if (generic_handler(rd.status_code, rd.response_body)) {
+        // Update ETag mapping
+        if (rd.headers.find("etag") != rd.headers.end()) {
+            etag_mapping[str_url] = rd.headers["etag"];
+        }
+
         auto json_response = json::parse(rd.response_body);
         auto folder_contents = json_response["files"];
         for (int i = 0; i < folder_contents.size(); i++) {
@@ -285,9 +317,9 @@ bool list_entries_multiple(const char* ids, const std::string &auth_token, std::
             entry.parent_id = parent_id;
             entries.push_back(entry);
         }
-        return true;
+        return REQUEST_SUCCESS;
     }
-    return false;
+    return REQUEST_FAILED;
 }
 
 // Create a new folder on the remote system
@@ -380,7 +412,7 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
 }
 
 // Get the size of a file on the remote system
-bool get_file_size(const std::string &file_id, int &file_size, const std::string &auth_token) {
+request_result get_file_size(const std::string &file_id, int &file_size, const std::string &auth_token) {
     char request_url[39 + strlen(request_start) + file_id.size()];
     sprintf(request_url, "%ssdk/v2/files/%s?pretty=false&fields=size", request_start, file_id.c_str());
 
@@ -388,16 +420,29 @@ bool get_file_size(const std::string &file_id, int &file_size, const std::string
         auth_token
     };
 
+    std::string str_url(request_url);
+
+    if (etag_mapping.find(str_url) != etag_mapping.end()) {
+        // We have a previous ETag, add if-none-match to the headers
+        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+    }
+
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
+    if (rd.status_code == 304) {
+        return REQUEST_CACHED;
+    } else if (generic_handler(rd.status_code, rd.response_body)) {
+        // Update ETag mapping
+        if (rd.headers.find("etag") != rd.headers.end()) {
+            etag_mapping[str_url] = rd.headers["etag"];
+        }
         printf("get_size request finished with status code 200\n");
         auto json_response = json::parse(rd.response_body);
         int size = json_response["size"];
         file_size = size;
-        return true;
+        return REQUEST_SUCCESS;
     }
 
-    return false;
+    return REQUEST_FAILED;
 }
 
 // Close an open file on the remote system

@@ -21,12 +21,27 @@ struct id_cache_value {
     std::string id;
 };
 
+struct subfolder_cache_value {
+    int validity;
+    int subfolder_count;
+};
+struct filesize_cache_value {
+    int validity;
+    int filesize;
+};
+// TODO: improve naming, use const referecnes where it's possilbe, comment stuff, remove dead code
+
 std::string WdFs::auth_header = std::string("");
 std::unordered_map<std::string, id_cache_value> remote_id_map;
-std::unordered_map<std::string, int> subfolder_count_cache;
+std::unordered_map<std::string, subfolder_cache_value> subfolder_count_cache;
 std::unordered_map<std::string, std::string> temp_file_binding;
 std::unordered_map<std::string, std::string> create_opened_files;
-
+// Used for caching entries of a specific parent entry
+std::unordered_map<std::string, std::vector<entry_data>> list_entries_cache;
+// Used by readdir for caching subfolder counts
+std::unordered_map<std::string, int> list_entries_multiple_cache;
+// Used for caching remote file sizes
+std::unordered_map<std::string, filesize_cache_value> filesize_cache;
 const int MY_O_RDONLY = 32768;
 //const int MY_O_WRONLY = 32769;
 //const int MY_O_RDWR = 32770;
@@ -58,14 +73,20 @@ std::vector<std::string> split_string(std::string *input, char delimiter) {
 int list_entries_expand(std::string *path, std::vector<entry_data> *result, const std::string &auth_header) {
     if (remote_id_map.find(*path) != remote_id_map.end()) {
         LOG("[list_entries_expand]: Corresponding ID for %s was found in the cache\n", path->c_str());
-        if (!remote_id_map[*path].is_dir) return false;
-        std::string entryId = remote_id_map[*path].id;
-        std::vector<entry_data> cache_results;
-        list_entries(entryId.c_str(), auth_header, cache_results);
-        LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
+        LOG("[list_entries_expand]: Path's ID is: %s (%d)\n", remote_id_map[*path].id.c_str(), remote_id_map[*path].is_dir);
+        if (!remote_id_map[*path].is_dir) return 0;
         if (result != NULL) {
-            for (auto it = cache_results.begin(); it != cache_results.end(); ++it) {
-                result->push_back(*it);
+            std::string entryId = remote_id_map[*path].id;
+            std::vector<entry_data> cache_results;
+            request_result res = list_entries(entryId.c_str(), auth_header, cache_results);
+            LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
+            if (res == REQUEST_SUCCESS) {
+                LOG("[list_entries_expand]: list_entries_cache invalidated\n");
+                *result = cache_results;
+                list_entries_cache[entryId] = cache_results;
+            } else if (res == REQUEST_CACHED) {
+                LOG("[list_entries_expand]: list_entries_cache is valid\n");
+                *result = list_entries_cache[entryId];
             }
         }
         return 1;
@@ -88,8 +109,6 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
                 entry_data currentEntry = *item;
 
                 if (currentEntry.name == current) {
-                    // TODO: should we cache files we encounter or just the path parts we go through?
-                    // TODO: ^^ check if there is a way to constantly check for changes and build a local cache of the remote state instead of fetching it every time
                     entry_found = true;
                     currentId = currentEntry.id;
                     id_cache_value cache_value;
@@ -99,6 +118,7 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
                     remote_id_map.insert(make_pair(currentFullPath, cache_value));
                     if (currentEntry.is_dir) {
                         folderFound = true;
+                        if (result == NULL) return 1;
                     }
                     break;
                 }
@@ -108,7 +128,14 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
         }
 
         currentItems.clear();
-        list_entries(currentId.c_str(), auth_header, currentItems);
+        request_result res = list_entries(currentId.c_str(), auth_header, currentItems);
+        if (res == REQUEST_CACHED) {
+            currentItems = list_entries_cache[currentId];
+            LOG("[list_entries_expand]: expanding -> results taken from cache\n");
+        } else if (res == REQUEST_SUCCESS) {
+            list_entries_cache[currentId] = currentItems;
+            LOG("[list_entries_expand]: expanding -> results taken from server -> results cached\n");
+        }
     }
 
     if (result != NULL) {
@@ -120,30 +147,6 @@ int list_entries_expand(std::string *path, std::vector<entry_data> *result, cons
     return 1;
 }
 
-int get_subfolder_count(std::string *path, const std::string &auth_header) {
-    if (remote_id_map.find(*path) != remote_id_map.end() &&
-            subfolder_count_cache.find(remote_id_map[*path].id) != subfolder_count_cache.end()) {
-        LOG("[get_subfolder_count]: Corresponding ID for path %s found, ID had cached subfolder count\n", path->c_str());
-        int last_known_subfolder_count = subfolder_count_cache[remote_id_map[*path].id];
-        // Remove element from cache, this is required to ensure that the subfolder count is always up to date
-        // The caching mechanism only caches it between a [readdir] and a [getattr] call for the path
-        // This speeds up the process a little-bit in 1 [readdir]-[getattr] call cycle
-        subfolder_count_cache.erase(remote_id_map[*path].id);
-        return last_known_subfolder_count; 
-    } else {
-        LOG("[get_subfolder_count]: Corresponding ID for path %s not found or ID didn't have cache subfolder count\n", path->c_str());
-        std::vector<entry_data> subfolder_entries;
-        int expand_result = list_entries_expand(path, &subfolder_entries, auth_header);
-        if (expand_result == 1) { // has entry and it's a directory
-            int subfolder_count = 0;
-            for (auto entry : subfolder_entries) {
-                if (entry.is_dir) subfolder_count++;
-            }
-            return subfolder_count;
-        } else if (expand_result == 0) return -1; // has entry but not directory
-        else return -2; // remote doesn't have this entry
-    }
-}
 
 std::string get_path_remote_id(std::string* path, const std::string &auth_header) {
     if (*path == "/" || *path == "") {
@@ -163,14 +166,69 @@ std::string get_path_remote_id(std::string* path, const std::string &auth_header
     return std::string("");
 }
 
+// Get the number of sub folders of a folder on the remote system
+int get_subfolder_count(std::string *path, const std::string &auth_header) {
+    LOG("[neo_subfolder]: Requesting subfolder count for %s\n", path->c_str());
+    std::string remote_id = get_path_remote_id(path, auth_header);
+    if (remote_id.empty()) return -2; // Server doesn't have this entry
+    if (remote_id != "root" && !remote_id_map[*path].is_dir) return -1; // Entry is not a directory
+    if (subfolder_count_cache.find(remote_id) != subfolder_count_cache.end()) {
+        // Check if there are results inserted by readdir
+        subfolder_cache_value v = subfolder_count_cache[remote_id];
+        if (v.validity == 1) {
+            // Value is from readdir call, cache can be treated as valid
+            v.validity = 0; // Invalidate cache after call
+            return v.subfolder_count;
+        }
+    }
+    std::vector<entry_data> entries;
+    bool cache_invalidated = false;
+    request_result res = list_entries(remote_id.c_str(), auth_header, entries);
+    if (res == REQUEST_FAILED) return -2;
+    else if (res == REQUEST_SUCCESS) {
+        // current cache invalid
+        LOG("[neo_subfolder]: server returned entries result\n");
+        list_entries_cache[remote_id] = entries;
+        cache_invalidated = true;
+    } else {
+        // Request is cached, but not sure if subfolder_count is cached
+        LOG("[neo_subfolder]: Server returned result is cached\n");
+    }
+    if (subfolder_count_cache.find(remote_id) == subfolder_count_cache.end() || cache_invalidated) {
+        LOG("[neo_subfolder]: Subfolder count cache needs to be updated\n");
+        int subfolder_count = 0;
+        for (auto entry : list_entries_cache[remote_id]) {
+            if (entry.is_dir) subfolder_count++;
+        }
+        LOG("[neo_subfolder]: Pushing %s => %d to subfolder cache\n", remote_id.c_str(), subfolder_count);
+        subfolder_cache_value v;
+        v.subfolder_count = subfolder_count;
+        v.validity = 0;
+        subfolder_count_cache[remote_id] = v;
+    }
+    // subfolder_count cache is 100% up to date at this point
+    return subfolder_count_cache[remote_id].subfolder_count;
+}
+
 // Get the size of a file on the remote system
 int path_get_size(std::string *file_path, const std::string &auth_header) {
     std::string file_id = get_path_remote_id(file_path, auth_header);
     if (file_id.empty()) return -1;
     int result = 0;
-    bool success = get_file_size(file_id, result, auth_header);
-    if (!success) return -1;
-    return result;
+    if (filesize_cache.find(file_id) != filesize_cache.end()) {
+        filesize_cache_value v = filesize_cache[file_id];
+        if (v.validity == 1) {
+            // Cache has valid value from previous readdir call
+            v.validity = 0; // Invalidate cache after this call
+            return v.filesize;
+        }
+    }
+    request_result res = get_file_size(file_id, result, auth_header);
+    if (res == REQUEST_SUCCESS) {
+        // Server sent new file size
+        filesize_cache[file_id].filesize = result;
+    } else if (res == REQUEST_FAILED) return -1;
+    return filesize_cache[file_id].filesize;
 }
 
 int WdFs::release(const char* file_path, struct fuse_file_info *) {
@@ -232,7 +290,11 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     // Load contents of remote file into the temp file
     std::string remote_id = get_path_remote_id(&str_path, auth_header);
     int remote_file_size = -1;
-    if (get_file_size(remote_id, remote_file_size, auth_header)) {
+    // Get size of the remote file
+    request_result res = get_file_size(remote_id, remote_file_size, auth_header);
+    if (res == REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
+    else if (res == REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
+    if (remote_file_size != -1) {
         LOG("[open]: Remote file exists and has %d bytes\n", remote_file_size);
         // Create temp file on remote
         std::string temp_file_id;
@@ -360,7 +422,6 @@ int WdFs::mkdir(const char* path, mode_t mode) {
 // Get the attributes of the file
 int WdFs::getattr(const char *path, struct stat *st, struct fuse_file_info *) {
     LOG ("[getattr] called for path: %s\n", path);
-    LOG("in get attr with path, %s\n", path);
 
     st->st_uid = getuid();
     st->st_gid = getgid();
@@ -403,6 +464,7 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
     std::vector<entry_data> entries;
     std::string str_path(path);
     std::string subfolder_id_param;
+    std::string filesize_id_param;
     int expand_result = list_entries_expand(&str_path, &entries, auth_header);
     if (expand_result == 1) { // has entry and it's a directory
         LOG("[readdir] Given path is a folder\n");
@@ -417,7 +479,15 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
             if (current.is_dir) {
                 subfolder_id_param.append(current.id);
                 subfolder_id_param.append(",");
-                subfolder_count_cache[current.id] = 0;
+                subfolder_cache_value v;
+                v.validity = 1;
+                v.subfolder_count = 0;
+                subfolder_count_cache[current.id] = v;
+            } else {
+                filesize_cache_value v;
+                v.validity = 1;
+                v.filesize = current.size;
+                filesize_cache[current.id] = v;
             }
         }
 
@@ -427,16 +497,36 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
 
         subfolder_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
-        std::vector<entry_data> subfolders;
-        list_entries_multiple(subfolder_id_param.c_str(), auth_header, subfolders);
+        filesize_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
 
-        for (auto entry : subfolders) {
-            if (entry.is_dir) subfolder_count_cache[entry.parent_id]++;
+        std::vector<entry_data> subfolders;
+        request_result res = list_entries_multiple(subfolder_id_param.c_str(), auth_header, subfolders);
+        if (res == REQUEST_SUCCESS) {
+            LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
+            for (auto entry : subfolders) {
+                if (entry.is_dir) subfolder_count_cache[entry.parent_id].subfolder_count++;
+            }
+        } else if (res == REQUEST_CACHED) {
+            // Fill subfolder_count from previously cached values
+            LOG("[readdir.subfolder_count_prefetch]: Server sent cache is valid\n");
+            for (auto item : list_entries_multiple_cache) {
+                subfolder_count_cache[item.first].subfolder_count = item.second;
+                subfolder_count_cache[item.first].validity = 1;
+            }
         }
 
-        LOG("[readdir.cache_subfolder_count] Listing subfolder count cache:\n");
+        LOG("[readdir.subfolder_count_prefetch] Listing subfolder count cache:\n");
         for (auto item : subfolder_count_cache) {
-            LOG("%s => %d\n", item.first.c_str(), item.second);
+            LOG("%s => %d\n", item.first.c_str(), item.second.subfolder_count);
+            if (res == REQUEST_SUCCESS) {
+                // Save copy of original subfolder counts to be reused if list_entries_multiple is cached
+                list_entries_multiple_cache[item.first] = item.second.subfolder_count;
+            }
+        }
+
+        LOG("[readdir.filesize_count_prefetch] Listing file size cache:\n");
+        for (auto item : filesize_cache) {
+            LOG("%s => %d\n", item.first.c_str(), item.second.filesize);
         }
     } else if (expand_result == 0) {  // has entry but it's a file
         return 0;
