@@ -1,8 +1,7 @@
 api.js
 Fusepp/
-wd_bridge
-device_locator
+bin/
 fs_mount/
-credentials.txt
-devid.txt
+build/credentials.txt
+build/devid.txt
 .clang_complete
