@@ -1,6 +1,7 @@
 api.js
 Fusepp/
 bin/
+!.gitkeep
 fs_mount/
 build/credentials.txt
 build/devid.txt
