@@ -54,6 +54,9 @@ std::unordered_map<std::string, filesize_cache_value> filesize_cache;
 // Readonly open flag value
 const int MY_O_RDONLY = 32768;
 
+// Truncate open flag value
+const int MY_O_TRUNC = 34817;
+
 // Additional open flag values not in use currently
 //const int MY_O_WRONLY = 32769;
 //const int MY_O_RDWR = 32770;
@@ -263,6 +266,58 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
     return filesize_cache[file_id].filesize;
 }
 
+// Change the size of the given file
+int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
+    LOG("[truncate]: Called for path %s\n Offset: %d\n", path, offset);
+    std::string str_path(path);
+    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
+    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
+    LOG("[truncate]: Parent folder is: %s\n", parent_path.c_str());
+    LOG("[truncate]: Temp file name is: %s\n", file_name.c_str());
+    std::string parent_id = get_path_remote_id(parent_path, auth_header);
+    LOG("[truncate]: Parent folder ID is: %s\n", parent_id.c_str());
+    // Load parts of remote file into the temp file
+    std::string remote_id = get_path_remote_id(str_path, auth_header);
+    int remote_file_size = -1;
+    // Get size of the remote file
+    request_result res = get_file_size(remote_id, remote_file_size, auth_header);
+    if (res == REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
+    else if (res == REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
+    if (remote_file_size <= (int) offset) return 0; // Nothing to truncate here
+    if (remote_file_size != -1) {
+        LOG("[truncate]: Remote file exists and has %d bytes\n", remote_file_size);
+        // Create temp file on remote
+        std::string temp_file_id;
+        bool temp_open_res = file_write_open(parent_id, file_name, auth_header, temp_file_id);
+        if (!temp_open_res) return -1;
+        // Read the remote file part in chunks
+        int bytes_read = 0;
+        const int CHUNK_SIZE = 4096;
+        void *buffer = malloc(CHUNK_SIZE);
+        memset(buffer, 0, CHUNK_SIZE);
+        std::string location_hdr("sdk/v2/files/" + temp_file_id);
+        while (bytes_read != (int)offset) {
+            int local_read = 0;
+            // Calculate the number of bytes to read, not to go beyond the specified offset
+            int to_read = std::min(CHUNK_SIZE, (int)offset - bytes_read);
+            bool success = read_file(remote_id, buffer, bytes_read, to_read, local_read, auth_header);
+            LOG("[truncate]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, offset);
+            if (!success) return -1;
+            bytes_read += local_read;
+            // Write file to remote temp file
+            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
+            if (!write_result) return -1;
+        }
+        free(buffer);
+        LOG("[truncate]: Remote file part copied to temp file on the remote filesystem\n");
+        // Bind path to temp file
+        temp_file_binding.insert(make_pair(str_path, temp_file_id));
+        LOG("[truncate]: Temp file binding %s=>%s cached\n", path, temp_file_id.c_str());
+        return 0;
+    }
+    return -1;
+}
+
 // Change modification time of path
 int WdFs::utimens(const char* path, const struct timespec tv[2], struct fuse_file_info *fi) {
     // Remote doesn't support changing atime
@@ -397,9 +452,9 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     LOG("[open]: Opening file %s\n", file_path);
     LOG("[open]: File opened with %d mode\n", fi->flags);
     // Ignore read only option as remote device is capable of handling offsets while reading
-    if (fi->flags == MY_O_RDONLY) return 0;
+    if (fi->flags == MY_O_RDONLY || fi->flags == MY_O_TRUNC) return 0;
     // tempfile required because remote can't write to a file after it's closed
-    LOG("[open]: File wasn't in read only mode, preloading to remote temp file...\n");
+    LOG("[open]: File wasn't in read only or truncate mode, preloading to remote temp file...\n");
     std::string str_path(file_path);
     std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
     std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
