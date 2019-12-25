@@ -361,8 +361,8 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
     } else if (create_opened_files.find(str_path) != create_opened_files.end()) {
         // File is has been created, but hasn't been closed yet
         std::string new_file_id = create_opened_files[str_path];
-        create_opened_files.erase(str_path);
         bool close_result = file_write_close(new_file_id, auth_header);
+        create_opened_files.erase(str_path);
         if (!close_result) {
             LOG("[release]: Failed to close created file!\n");
             return -1;
