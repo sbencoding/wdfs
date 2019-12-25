@@ -136,7 +136,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
                     remote_id_map.insert(make_pair(current_full_path, cache_value));
                     if (current_entry.is_dir) { // The entry is a folder indeed
                         folder_found = true;
-                        if (result == NULL) return 1;
+                        if (result == NULL && it + 1 == parts.end()) return 1;
                     }
                     break;
                 }
@@ -166,11 +166,16 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
 
 // Get the ID of the remote entry corresponding to the local path given
 std::string get_path_remote_id(const std::string &path, const std::string &auth_header) {
+    // !FIXME: check create_opened cache for new files that are not listed by the server
     if (path == "/" || path == "") { // check if path is root
         return "root";
     } else if (remote_id_map.find(path) != remote_id_map.end()) { // check if path is in the cache
         LOG("[get_remote_id]: Path is cached in remote_id_map\n");
         return remote_id_map[path].id;
+    } else if (create_opened_files.find(path) != create_opened_files.end()) {
+        // This is a newly created, still open file, won't be listed by server
+        LOG("[get_remote_id]: Path is a newly created file, that's still open, returning id from map\n");
+        return create_opened_files[path];
     }
     LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
     // list_entries_expand automatically populates the cache if the entry exists
@@ -188,7 +193,7 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
     LOG("[get_subfolder_count]: Requesting subfolder count for %s\n", path.c_str());
     std::string remote_id = get_path_remote_id(path, auth_header);
     if (remote_id.empty()) return -2; // Server doesn't have this entry
-    if (remote_id != "root" && !remote_id_map[path].is_dir) return -1; // Entry is not a directory
+    if (create_opened_files.find(path) != create_opened_files.end() || (remote_id != "root" && !remote_id_map[path].is_dir)) return -1; // Entry is not a directory
     if (subfolder_count_cache.find(remote_id) != subfolder_count_cache.end()) {
         // Check if there are results inserted by readdir
         subfolder_cache_value v = subfolder_count_cache[remote_id];
@@ -231,6 +236,10 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
 // Get the size of a file on the remote system
 int path_get_size(const std::string &file_path, const std::string &auth_header) {
     // get the remote ID of the file
+    if (create_opened_files.find(file_path) != create_opened_files.end()) {
+        // if the file is a newly created, still open file, the remote won't know about it
+        return 0;
+    }
     std::string file_id = get_path_remote_id(file_path, auth_header);
     if (file_id.empty()) return -1;
     int result = 0;
