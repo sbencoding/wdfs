@@ -263,6 +263,71 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
     return filesize_cache[file_id].filesize;
 }
 
+// Rename and/or move a file on the remote system
+int WdFs::rename(const char* old_location, const char* new_location, unsigned int flags) {
+    LOG("[rename]: Called for %s -> %s\n", old_location, new_location);
+    if (flags == RENAME_EXCHANGE) {
+        LOG("[rename]: flag => target is kept if exists[NOT IMPLEMENTED]\n");
+        return -EINVAL;
+    } else if (flags == RENAME_NOREPLACE) {
+        LOG("[rename]: flag => error is thrown if target exists\n");
+    }
+    LOG("[rename]: flags = %d\n", flags);
+
+    // Check if the path to move/rename exists
+    std::string str_old_path(old_location);
+    std::string old_id = get_path_remote_id(str_old_path, auth_header);
+    if (old_id.empty()) return -ENOENT; // Given entry doesn't exist
+    std::string str_new_path(new_location);
+    std::string new_id = get_path_remote_id(str_new_path, auth_header);
+    if (!new_id.empty() && flags == RENAME_NOREPLACE) { // newpath exists and should not exist
+        LOG("[rename]: RENAME_NOREPLACE flag was set and new_location exists\n");
+        return -EEXIST; // taken from http://man7.org/linux/man-pages/man2/rename.2.html
+    } else if (!new_id.empty()) {
+        LOG("[rename]: Removing existing file %s, it's going to be replaced\n", new_location);
+        bool success = remove_entry(new_id, auth_header);
+        if (!success) {
+            LOG("[rename]: Failed to remove already existing file!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    // Parse new path
+    std::string target_folder(str_new_path.substr(0, str_new_path.find_last_of('/')));
+    std::string new_name(str_new_path.substr(str_new_path.find_last_of('/') + 1));
+    // Parse old path
+    std::string old_folder(str_old_path.substr(0, str_old_path.find_last_of('/')));
+    std::string old_name(str_old_path.substr(str_old_path.find_last_of('/') + 1));
+
+    if (target_folder != old_folder) {
+        // We have to move the entry to a new folder
+        std::string target_folder_id = get_path_remote_id(target_folder, auth_header);
+        bool success = move_entry(old_id, target_folder_id, auth_header);
+        if (!success) {
+            LOG("[rename]: Move entry to new folder failed!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    if (new_name != old_name) {
+        // We have to rename the entry
+        bool success = rename_entry(old_id, new_name, auth_header);
+        if (!success) {
+            LOG("[rename]: Entry rename failed!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    // Bind the new path to the same ID (file IDs never change on remote)
+    remote_id_map[str_new_path] = remote_id_map[str_old_path];
+    // Remove the binding of the old path to the ID
+    remote_id_map.erase(str_old_path);
+
+    LOG("[rename]: Rename successful!\n");
+
+    return 0;
+}
+
 // Release an open file
 int WdFs::release(const char* file_path, struct fuse_file_info *) {
     LOG("[release]: Releasing file %s\n", file_path);

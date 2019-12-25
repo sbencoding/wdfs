@@ -547,6 +547,33 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
     return false;
 }
 
+// Move an entry on the remote system
+bool move_entry(const std::string &entry_id, const std::string &new_parent_id, const std::string &auth_token) {
+    char request_url[20 + strlen(request_start) + entry_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s/patch", request_start, entry_id.c_str());
+
+    std::vector<std::string> headers {
+        auth_token,
+        "Content-Type: text/plain;charset=UTF-8"
+    };
+
+    // Write request body
+    std::string current_time = get_formatted_time();
+    json req = {
+        {"parentID", new_parent_id.c_str()},
+    };
+
+    std::string rbody = req.dump();
+
+    response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
+    if (generic_handler(rd.status_code, rd.response_body)) {
+        printf("move_entry request finished with status code 204\n");
+        return true;
+    }
+
+    return false;
+}
+
 // Get the auth0 userid of the user
 bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
     const char *request_url = "https://wdc.auth0.com/userinfo";

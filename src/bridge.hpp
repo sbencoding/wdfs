@@ -26,6 +26,7 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
 bool file_write_close(const std::string &new_file_id, const std::string &auth_token);
 bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer);
 bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token);
+bool move_entry(const std::string &entry_id, const std::string &new_parent_id, const std::string &auth_token);
 void set_wd_host(const char* host);
 bool auth0_get_userid(const std::string &auth_token, std::string &user_id);
 bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list);

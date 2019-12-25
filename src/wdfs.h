@@ -21,6 +21,7 @@ class WdFs : public Fusepp::Fuse<WdFs> {
         static int create(const char* file_path, mode_t mode, struct fuse_file_info *);
         static int open(const char* file_path, struct fuse_file_info *);
         static int release(const char* file_path, struct fuse_file_info *);
+        static int rename(const char* oldname, const char* newname, unsigned int flags);
         static void set_authorization_header(std::string authorization_header);
 };
 
