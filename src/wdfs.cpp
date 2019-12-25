@@ -263,6 +263,27 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
     return filesize_cache[file_id].filesize;
 }
 
+// Change modification time of path
+int WdFs::utimens(const char* path, const struct timespec tv[2], struct fuse_file_info *fi) {
+    // Remote doesn't support changing atime
+    // Remote doesn't support ns precision, only seconds precision
+    LOG("[utimens]: Called for path %s\n", path);
+    if (tv[1].tv_sec == 0) return 0; // Can't set access time
+    LOG("[utimens]: Setting epoch timestamp of %d\n", tv[1].tv_sec);
+    std::string str_path(path);
+    std::string remote_id = get_path_remote_id(str_path, auth_header);
+    if (remote_id.empty()) {
+        LOG("[utimens]: Failed to get the ID of the remote file\n");
+        return -1;
+    }
+    bool success = set_modification_time(remote_id, tv[1].tv_sec, auth_header);
+    if (!success) {
+        LOG("[utimens]: Failed to set modification time\n");
+        return -1;
+    }
+    return 0;
+}
+
 // Rename and/or move a file on the remote system
 int WdFs::rename(const char* old_location, const char* new_location, unsigned int flags) {
     LOG("[rename]: Called for %s -> %s\n", old_location, new_location);

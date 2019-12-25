@@ -50,11 +50,9 @@ void set_wd_host(const char *wdhost) {
     sprintf(request_start, "https://%s.remotewd.com/", wdhost);
 }
 
-std::string get_formatted_time() {
-    // Get current time
-    time_t t;
+// Convert the given timestamp to the required format by the server
+std::string to_iso_time(const time_t &t) {
     struct tm *tmp;
-    t = time(NULL);
     tmp = localtime(&t);
     if (tmp == NULL) {
         fprintf(stderr, "[get_formatted_time]: Failed to get local time\n");
@@ -75,6 +73,14 @@ std::string get_formatted_time() {
     std::string str_offset(offset_result);
     str_offset.insert(3, ":");
     return std::string(formatted_result + str_offset);
+}
+
+// Get the current time in the required format
+std::string get_formatted_time() {
+    // Get current time
+    time_t t;
+    t = time(NULL);
+    return to_iso_time(t);
 }
 
 // Get status code and collect headers
@@ -541,6 +547,33 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
     response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
         printf("rename_entry request finished with status code 204\n");
+        return true;
+    }
+
+    return false;
+}
+
+// Set the modification time of a file
+bool set_modification_time(const std::string &entry_id, const time_t &new_time, const std::string &auth_token) {
+    char request_url[20 + strlen(request_start) + entry_id.size()];
+    sprintf(request_url, "%ssdk/v2/files/%s/patch", request_start, entry_id.c_str());
+
+    std::vector<std::string> headers {
+        auth_token,
+        "Content-Type: text/plain;charset=UTF-8"
+    };
+
+    // Write request body
+    std::string time_to_set = to_iso_time(new_time);
+    json req = {
+        {"mTime", time_to_set.c_str()}
+    };
+
+    std::string rbody = req.dump();
+
+    response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
+    if (generic_handler(rd.status_code, rd.response_body)) {
+        printf("set_modification_time request finished with status code 204\n");
         return true;
     }
 
