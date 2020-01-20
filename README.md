@@ -11,20 +11,25 @@ To get past these limitations I've decided to create a file system, where you ca
 It acts as a bridge between the web interface and the local system.  
 `libcurl` is installed by default on many systems, but if you don't have it you can use your distro's package manager to do it.  
 **Examples**:  
-`sudo apt-get install curl` for Debian based systems.  
-`pacman -S curl` for Arch based systems. etc...  
+`sudo apt-get install curl libcurl4 libcurl4-openssl-dev` for Debian based systems.  
+`pacman -S curl libcurl-openssl` for Arch based systems. etc...  
 2. **FUSE/libfuse**  
 `libfuse` is required to expose a file system to the kernel through `FUSE` and implement the methods of a file system.  
 Version 3.x of `libfuse` is required.  
 **Installation**:  
-`sudo apt-get install fuse3 libfuse3-3` for Debian based systems.  
+`sudo apt-get install fuse3 libfuse3-3 libfuse3-dev` for Debian based systems.  
 `pacman -S fuse-common fuse3` for Arch based systems. etc...  
 
 ### Building
 If you've installed all the required dependencies listed above, you can build the project.  
 First `git clone` the project and then `cd` into the created directory.  
 After this go into the `build` folder and execute the `build.sh` file to build the file system.  
-*note*: You might not have `clang` installed, in this case simply edit the `build.sh` file and replace `clang++` at the start of the command with `g++`, which should be installed on most systems.  
+**Build arguments**
+1. **compiler**  - as the first argument, you can specify the compiler to be used.
+`clang` is used by default, the other option you can give is `gcc`.
+2. **architecture** - FUSE requires an extra flag when building on a 32-bit system, for this reason you can specify `32` as the second argument, the default is `64`.
+*note*: You must specify the first argument if you specify the second!
+
 After the build successfully finishes the binary is generated at the path `bin/wd_bridge`.  
 *note*: The compiler may throw some warnings, these will be fixed in the future. Don't worry, the binary is usable regardless.  
 
@@ -47,6 +52,10 @@ You can now start using `ls` and `cat` etc. to explore the file system and the f
 To figure out the ID of the device you wish to mount, I've written a separate program called `device_locator`.  
 ##### Building
 Go into the `build` folder and execute `build-locator.sh`, this should build the `device_locator` program.  
+**Build arguments**
+1. **compiler** - as the first argument, you can specify the compiler to be used.
+`clang` is used by default, the other option you can give is `gcc`.
+
 After the build finishes, you can execute the `device_locator`.
 ##### Running
 `device_locator` requires 2 arguments to run.  

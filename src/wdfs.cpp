@@ -54,6 +54,9 @@ std::unordered_map<std::string, filesize_cache_value> filesize_cache;
 // Readonly open flag value
 const int MY_O_RDONLY = 32768;
 
+// Truncate open flag value
+const int MY_O_TRUNC = 34817;
+
 // Additional open flag values not in use currently
 //const int MY_O_WRONLY = 32769;
 //const int MY_O_RDWR = 32770;
@@ -136,7 +139,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
                     remote_id_map.insert(make_pair(current_full_path, cache_value));
                     if (current_entry.is_dir) { // The entry is a folder indeed
                         folder_found = true;
-                        if (result == NULL) return 1;
+                        if (result == NULL && it + 1 == parts.end()) return 1;
                     }
                     break;
                 }
@@ -166,11 +169,16 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
 
 // Get the ID of the remote entry corresponding to the local path given
 std::string get_path_remote_id(const std::string &path, const std::string &auth_header) {
+    // !FIXME: check create_opened cache for new files that are not listed by the server
     if (path == "/" || path == "") { // check if path is root
         return "root";
     } else if (remote_id_map.find(path) != remote_id_map.end()) { // check if path is in the cache
         LOG("[get_remote_id]: Path is cached in remote_id_map\n");
         return remote_id_map[path].id;
+    } else if (create_opened_files.find(path) != create_opened_files.end()) {
+        // This is a newly created, still open file, won't be listed by server
+        LOG("[get_remote_id]: Path is a newly created file, that's still open, returning id from map\n");
+        return create_opened_files[path];
     }
     LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
     // list_entries_expand automatically populates the cache if the entry exists
@@ -188,7 +196,7 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
     LOG("[get_subfolder_count]: Requesting subfolder count for %s\n", path.c_str());
     std::string remote_id = get_path_remote_id(path, auth_header);
     if (remote_id.empty()) return -2; // Server doesn't have this entry
-    if (remote_id != "root" && !remote_id_map[path].is_dir) return -1; // Entry is not a directory
+    if (create_opened_files.find(path) != create_opened_files.end() || (remote_id != "root" && !remote_id_map[path].is_dir)) return -1; // Entry is not a directory
     if (subfolder_count_cache.find(remote_id) != subfolder_count_cache.end()) {
         // Check if there are results inserted by readdir
         subfolder_cache_value v = subfolder_count_cache[remote_id];
@@ -231,6 +239,10 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
 // Get the size of a file on the remote system
 int path_get_size(const std::string &file_path, const std::string &auth_header) {
     // get the remote ID of the file
+    if (create_opened_files.find(file_path) != create_opened_files.end()) {
+        // if the file is a newly created, still open file, the remote won't know about it
+        return 0;
+    }
     std::string file_id = get_path_remote_id(file_path, auth_header);
     if (file_id.empty()) return -1;
     int result = 0;
@@ -252,6 +264,144 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
 
     // Cache is 100% valid at this point
     return filesize_cache[file_id].filesize;
+}
+
+// Change the size of the given file
+int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
+    LOG("[truncate]: Called for path %s\n Offset: %d\n", path, offset);
+    std::string str_path(path);
+    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
+    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
+    LOG("[truncate]: Parent folder is: %s\n", parent_path.c_str());
+    LOG("[truncate]: Temp file name is: %s\n", file_name.c_str());
+    std::string parent_id = get_path_remote_id(parent_path, auth_header);
+    LOG("[truncate]: Parent folder ID is: %s\n", parent_id.c_str());
+    // Load parts of remote file into the temp file
+    std::string remote_id = get_path_remote_id(str_path, auth_header);
+    int remote_file_size = -1;
+    // Get size of the remote file
+    request_result res = get_file_size(remote_id, remote_file_size, auth_header);
+    if (res == REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
+    else if (res == REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
+    if (remote_file_size <= (int) offset) return 0; // Nothing to truncate here
+    if (remote_file_size != -1) {
+        LOG("[truncate]: Remote file exists and has %d bytes\n", remote_file_size);
+        // Create temp file on remote
+        std::string temp_file_id;
+        bool temp_open_res = file_write_open(parent_id, file_name, auth_header, temp_file_id);
+        if (!temp_open_res) return -1;
+        // Read the remote file part in chunks
+        int bytes_read = 0;
+        const int CHUNK_SIZE = 4096;
+        void *buffer = malloc(CHUNK_SIZE);
+        memset(buffer, 0, CHUNK_SIZE);
+        std::string location_hdr("sdk/v2/files/" + temp_file_id);
+        while (bytes_read != (int)offset) {
+            int local_read = 0;
+            // Calculate the number of bytes to read, not to go beyond the specified offset
+            int to_read = std::min(CHUNK_SIZE, (int)offset - bytes_read);
+            bool success = read_file(remote_id, buffer, bytes_read, to_read, local_read, auth_header);
+            LOG("[truncate]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, offset);
+            if (!success) return -1;
+            bytes_read += local_read;
+            // Write file to remote temp file
+            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
+            if (!write_result) return -1;
+        }
+        free(buffer);
+        LOG("[truncate]: Remote file part copied to temp file on the remote filesystem\n");
+        // Bind path to temp file
+        temp_file_binding.insert(make_pair(str_path, temp_file_id));
+        LOG("[truncate]: Temp file binding %s=>%s cached\n", path, temp_file_id.c_str());
+        return 0;
+    }
+    return -1;
+}
+
+// Change modification time of path
+int WdFs::utimens(const char* path, const struct timespec tv[2], struct fuse_file_info *fi) {
+    // Remote doesn't support changing atime
+    // Remote doesn't support ns precision, only seconds precision
+    LOG("[utimens]: Called for path %s\n", path);
+    if (tv[1].tv_sec == 0) return 0; // Can't set access time
+    LOG("[utimens]: Setting epoch timestamp of %d\n", tv[1].tv_sec);
+    std::string str_path(path);
+    std::string remote_id = get_path_remote_id(str_path, auth_header);
+    if (remote_id.empty()) {
+        LOG("[utimens]: Failed to get the ID of the remote file\n");
+        return -1;
+    }
+    bool success = set_modification_time(remote_id, tv[1].tv_sec, auth_header);
+    if (!success) {
+        LOG("[utimens]: Failed to set modification time\n");
+        return -1;
+    }
+    return 0;
+}
+
+// Rename and/or move a file on the remote system
+int WdFs::rename(const char* old_location, const char* new_location, unsigned int flags) {
+    LOG("[rename]: Called for %s -> %s\n", old_location, new_location);
+    if (flags == RENAME_EXCHANGE) {
+        LOG("[rename]: flag => target is kept if exists[NOT IMPLEMENTED]\n");
+        return -EINVAL;
+    } else if (flags == RENAME_NOREPLACE) {
+        LOG("[rename]: flag => error is thrown if target exists\n");
+    }
+    LOG("[rename]: flags = %d\n", flags);
+
+    // Check if the path to move/rename exists
+    std::string str_old_path(old_location);
+    std::string old_id = get_path_remote_id(str_old_path, auth_header);
+    if (old_id.empty()) return -ENOENT; // Given entry doesn't exist
+    std::string str_new_path(new_location);
+    std::string new_id = get_path_remote_id(str_new_path, auth_header);
+    if (!new_id.empty() && flags == RENAME_NOREPLACE) { // newpath exists and should not exist
+        LOG("[rename]: RENAME_NOREPLACE flag was set and new_location exists\n");
+        return -EEXIST; // taken from http://man7.org/linux/man-pages/man2/rename.2.html
+    } else if (!new_id.empty()) {
+        LOG("[rename]: Removing existing file %s, it's going to be replaced\n", new_location);
+        bool success = remove_entry(new_id, auth_header);
+        if (!success) {
+            LOG("[rename]: Failed to remove already existing file!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    // Parse new path
+    std::string target_folder(str_new_path.substr(0, str_new_path.find_last_of('/')));
+    std::string new_name(str_new_path.substr(str_new_path.find_last_of('/') + 1));
+    // Parse old path
+    std::string old_folder(str_old_path.substr(0, str_old_path.find_last_of('/')));
+    std::string old_name(str_old_path.substr(str_old_path.find_last_of('/') + 1));
+
+    if (target_folder != old_folder) {
+        // We have to move the entry to a new folder
+        std::string target_folder_id = get_path_remote_id(target_folder, auth_header);
+        bool success = move_entry(old_id, target_folder_id, auth_header);
+        if (!success) {
+            LOG("[rename]: Move entry to new folder failed!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    if (new_name != old_name) {
+        // We have to rename the entry
+        bool success = rename_entry(old_id, new_name, auth_header);
+        if (!success) {
+            LOG("[rename]: Entry rename failed!\n");
+            return -1; // No specific error code for bridge failure
+        }
+    }
+
+    // Bind the new path to the same ID (file IDs never change on remote)
+    remote_id_map[str_new_path] = remote_id_map[str_old_path];
+    // Remove the binding of the old path to the ID
+    remote_id_map.erase(str_old_path);
+
+    LOG("[rename]: Rename successful!\n");
+
+    return 0;
 }
 
 // Release an open file
@@ -287,8 +437,8 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
     } else if (create_opened_files.find(str_path) != create_opened_files.end()) {
         // File is has been created, but hasn't been closed yet
         std::string new_file_id = create_opened_files[str_path];
-        create_opened_files.erase(str_path);
         bool close_result = file_write_close(new_file_id, auth_header);
+        create_opened_files.erase(str_path);
         if (!close_result) {
             LOG("[release]: Failed to close created file!\n");
             return -1;
@@ -302,9 +452,9 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     LOG("[open]: Opening file %s\n", file_path);
     LOG("[open]: File opened with %d mode\n", fi->flags);
     // Ignore read only option as remote device is capable of handling offsets while reading
-    if (fi->flags == MY_O_RDONLY) return 0;
+    if (fi->flags == MY_O_RDONLY || fi->flags == MY_O_TRUNC) return 0;
     // tempfile required because remote can't write to a file after it's closed
-    LOG("[open]: File wasn't in read only mode, preloading to remote temp file...\n");
+    LOG("[open]: File wasn't in read only or truncate mode, preloading to remote temp file...\n");
     std::string str_path(file_path);
     std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
     std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
