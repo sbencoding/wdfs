@@ -6,3 +6,4 @@ fs_mount/
 build/credentials.txt
 build/devid.txt
 .clang_complete
+*.o
