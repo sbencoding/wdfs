@@ -6,6 +6,8 @@
 #include "json.hpp"
 #include "bridge.hpp"
 
+#define WD_REQUEST_TIMEOUT 7L
+
 using json = nlohmann::json;
 
 // Simple key value pair
@@ -125,6 +127,8 @@ static CURL* request_base(const char* method, const char* url, const std::vector
     
     curl = curl_easy_init();
     if (curl) {
+        // Set request timeout
+        curl_easy_setopt(curl, CURLOPT_TIMEOUT, WD_REQUEST_TIMEOUT);
         // Set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, url);
         // Set header callback
