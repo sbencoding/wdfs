@@ -1,4 +1,5 @@
 #include "wdfs.h"
+#include "bridge.hpp"
 #include "Fuse-impl.h"
 #include <stdio.h>
 #include <unistd.h>
@@ -6,7 +7,6 @@
 #include <string>
 #include <vector>
 #include <unordered_map>
-#include "bridge.hpp"
 
 #define DEBUG_LOGGING
 

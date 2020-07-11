@@ -1,12 +1,10 @@
+#include "json.hpp"
+#include "bridge.hpp"
 #include <stdio.h>
 #include <curl/curl.h>
 #include <string>
 #include <vector>
 #include <time.h>
-#include "json.hpp"
-#include "bridge.hpp"
-
-#define WD_REQUEST_TIMEOUT 7L
 
 using json = nlohmann::json;
 
@@ -31,7 +29,7 @@ struct response_data {
 // Data for reading response as a buffer
 struct buffer_result {
     int bytes_read;
-    void *buffer;
+    char *buffer;
 };
 
 // Map request urls to etags
@@ -115,8 +113,10 @@ static size_t collect_response_string(void *content, size_t size, size_t nmemb, 
 }
 
 static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, buffer_result *data) {
+    int i_size = (int)size * (int)nmemb;
     memcpy(data->buffer, content, size * nmemb);
-    data->bytes_read += (int)size * (int)nmemb;
+    data->bytes_read += i_size;
+    data->buffer += sizeof(char) * i_size;
     return size * nmemb;
 }
 
@@ -127,8 +127,6 @@ static CURL* request_base(const char* method, const char* url, const std::vector
     
     curl = curl_easy_init();
     if (curl) {
-        // Set request timeout
-        curl_easy_setopt(curl, CURLOPT_TIMEOUT, WD_REQUEST_TIMEOUT);
         // Set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, url);
         // Set header callback
@@ -401,7 +399,7 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
     CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
     if (curl) {
         buffer_result current_result;
-        current_result.buffer = buffer;
+        current_result.buffer = (char*)buffer;
         current_result.bytes_read = 0;
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
