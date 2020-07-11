@@ -1,1 +1,1 @@
-../bin/wd_bridge $(cat credentials.txt | cut -d$'\n' -f1) $(cat credentials.txt | cut -d$'\n' -f2) ../fs_mount/ $(cat devid.txt)
+../bin/wd_bridge -f ../fs_mount -ouser=$(cat credentials.txt | cut -d$'\n' -f1),pass=$(cat credentials.txt | cut -d$'\n' -f2),host=$(cat devid.txt)
