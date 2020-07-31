@@ -8,20 +8,12 @@
 
 using json = nlohmann::json;
 
-// Simple key value pair
-struct http_header {
-    std::string name;
-    std::string value;
-    http_header(const char* _name, const char* _value) : name(std::string(_name)), value(std::string(_value)) {}
-    http_header(std::string _name, std::string _value) : name(_name), value(_value) {}
-};
-
 // Data to pass around in CURL header callback
 struct response_data {
-    // Header key value pairs
-    std::unordered_map<std::string, std::string> headers;
     // Status code of the request
     int status_code;
+    // Header key value pairs
+    std::unordered_map<std::string, std::string> headers;
     // Response body
     std::string response_body;
 };
@@ -30,6 +22,7 @@ struct response_data {
 struct buffer_result {
     int bytes_read;
     char *buffer;
+    buffer_result(int bytes, char* buf) : bytes_read(bytes), buffer(buf) {}
 };
 
 // Map request urls to etags
@@ -42,7 +35,7 @@ char *request_start = NULL;
 void set_wd_host(const char *wdhost) {
     // Size of the URL start + 1 for zero termination
     int str_size = 23 + strlen(wdhost);
-    // Allocate / reallocated the size of the buffer
+    // Allocate / reallocate the size of the buffer
     if (request_start != NULL) {
         request_start = (char *) realloc(request_start, str_size);
     } else request_start = (char *) malloc(str_size);
@@ -63,7 +56,7 @@ std::string to_iso_time(const time_t &t) {
     char formatted_result[100];
     char offset_result[6];
     if (strftime(formatted_result, sizeof(formatted_result), "%Y-%m-%dT%H:%M:%S", tmp) == 0) {
-        fprintf(stderr, "[get_formatted_time]: strftime call failed for date nad time\n");
+        fprintf(stderr, "[get_formatted_time]: strftime call failed for date and time\n");
     }
     if (strftime(offset_result, sizeof(offset_result), "%z", tmp) == 0) {
         fprintf(stderr, "[get_formatted_time]: strftime call failed for offset\n");
@@ -91,11 +84,9 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *us
     response_data *data = (response_data *)userdata;
     if (colon_index != -1) {
         std::string name = buf.substr(0, colon_index);
-        std::string value = buf.substr(colon_index + 2);
-        // remove the trailing \r\n
-        value = value.substr(0, value.size() - 2);
-        //http_header current(name, value);
-        data->headers.insert(make_pair(name, value));
+        // Additional -2 from substring size to remove the trailing \r\n
+        std::string value = buf.substr(colon_index + 2, buf.size() - colon_index - 4);
+        data->headers.emplace(std::move(name), std::move(value));
     } else if (http_index == 0) {
         // HTTP/1.1 200 OK => status code is between the 2 spaces
         int first_space = buf.find_first_of(" ");
@@ -138,7 +129,7 @@ static CURL* request_base(const char* method, const char* url, const std::vector
         curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
 
         // Set request headers
-        for (std::string header : headers) {
+        for (const std::string& header : headers) {
             chunk = curl_slist_append(chunk, header.c_str());
         }
         curl_easy_setopt(curl, CURLOPT_HTTPHEADER, chunk);
@@ -255,7 +246,7 @@ request_result list_entries(const char* path, const std::string &auth_token, std
     std::string str_url(request_url);
     if (etag_mapping.find(str_url) != etag_mapping.end()) {
         // We have a previous ETag, add if-none-match to the headers
-        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+        headers.emplace_back("If-None-Match: " + etag_mapping[str_url]);
     }
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -269,18 +260,15 @@ request_result list_entries(const char* path, const std::string &auth_token, std
         }
         auto json_response = json::parse(rd.response_body);
         auto folder_contents = json_response["files"];
+        entries.resize(folder_contents.size());
         for (int i = 0; i < folder_contents.size(); i++) {
             std::string id = folder_contents[i]["id"];
             std::string name = folder_contents[i]["name"];
             bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
             int size = 0;
             if (folder_contents[i]["size"] != nullptr) size = folder_contents[i]["size"];
-            entry_data entry;
-            entry.id = id;
-            entry.name = name;
-            entry.is_dir = is_dir;
-            entry.size = size;
-            entries.push_back(entry);
+            entry_data entry(size, is_dir, id, name);
+            entries[i] = entry;
         }
         return REQUEST_SUCCESS;
     }
@@ -299,7 +287,7 @@ request_result list_entries_multiple(const char* ids, const std::string &auth_to
     std::string str_url(request_url);
     if (etag_mapping.find(str_url) != etag_mapping.end()) {
         // We have a previous ETag, add if-none-match to the headers
-        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+        headers.emplace_back("If-None-Match: " + etag_mapping[str_url]);
     }
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -313,17 +301,14 @@ request_result list_entries_multiple(const char* ids, const std::string &auth_to
 
         auto json_response = json::parse(rd.response_body);
         auto folder_contents = json_response["files"];
+        entries.resize(folder_contents.size());
         for (int i = 0; i < folder_contents.size(); i++) {
             std::string id = folder_contents[i]["id"];
             std::string name = folder_contents[i]["name"];
             bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
             std::string parent_id = folder_contents[i]["parentID"];
-            entry_data entry;
-            entry.id = id;
-            entry.name = name;
-            entry.is_dir = is_dir;
-            entry.parent_id = parent_id;
-            entries.push_back(entry);
+            entry_data entry(is_dir, id, name, parent_id);
+            entries[i] = entry;
         }
         return REQUEST_SUCCESS;
     }
@@ -398,9 +383,7 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
 
     CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
     if (curl) {
-        buffer_result current_result;
-        current_result.buffer = (char*)buffer;
-        current_result.bytes_read = 0;
+        buffer_result current_result(0, (char*)buffer);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
         res = curl_easy_perform(curl);
@@ -432,7 +415,7 @@ request_result get_file_size(const std::string &file_id, int &file_size, const s
 
     if (etag_mapping.find(str_url) != etag_mapping.end()) {
         // We have a previous ETag, add if-none-match to the headers
-        headers.push_back(std::string("If-None-Match: " + etag_mapping[str_url]));
+        headers.emplace_back("If-None-Match: " + etag_mapping[str_url]);
     }
 
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
@@ -642,10 +625,11 @@ bool get_user_devices(const std::string &auth_token, const std::string &user_id,
     if (generic_handler(rd.status_code, rd.response_body)) {
         auto json_response = json::parse(rd.response_body);
         auto data_obj = json_response["data"];
+        device_list.resize(data_obj.size());
         for (int i = 0; i < data_obj.size(); i++) {
             std::string device_id = data_obj[i]["deviceId"];
             std::string device_name = data_obj[i]["name"];
-            device_list.push_back(make_pair(device_id, device_name));
+            device_list[i] = std::move(make_pair(device_id, device_name));
         }
         return true;
     }

@@ -2,11 +2,14 @@
 #include <string>
 
 struct entry_data {
+    int size;
     std::string id;
     std::string name;
-    bool is_dir;
     std::string parent_id;
-    int size;
+    bool is_dir;
+    entry_data() {}
+    entry_data(int s, bool dir, std::string _id, std::string _name) : size(s), is_dir(dir), id(_id), name(_name) {}
+    entry_data(bool dir, std::string _id, std::string _name, std::string _parent_id) : is_dir(dir), id(_id), name(_name), parent_id(_parent_id) {}
 };
 
 enum request_result {
