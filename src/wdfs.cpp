@@ -24,12 +24,14 @@ struct id_cache_value {
 
 // Value used for subfolder count caching
 struct subfolder_cache_value {
+    // TODO: rename to is_hot
     int validity;
     int subfolder_count;
 };
 
 // Value used for file size caching
 struct filesize_cache_value {
+    // TODO: rename to is_hot
     int validity;
     int filesize;
 };
@@ -220,11 +222,12 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
         LOG("[get_subfolder_count]: Server returned result is cached\n");
     }
     if (subfolder_count_cache.find(remote_id) == subfolder_count_cache.end() || cache_invalidated) {
-        // check if the cache needs to be updated and updated it
+        // check if the cache needs to be updated and update it
         LOG("[get_subfolder_count]: Subfolder count cache needs to be updated\n");
         int subfolder_count = 0;
-        for (auto entry : list_entries_cache[remote_id]) {
-            if (entry.is_dir) subfolder_count++;
+        for (const auto& entry : list_entries_cache[remote_id]) {
+            //if (entry.is_dir) subfolder_count++;
+            subfolder_count += entry.is_dir;
         }
         LOG("[get_subfolder_count]: Pushing %s => %d to subfolder cache\n", remote_id.c_str(), subfolder_count);
         subfolder_cache_value v;
@@ -348,7 +351,7 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
     } else if (flags == RENAME_NOREPLACE) {
         LOG("[rename]: flag => error is thrown if target exists\n");
     }
-    LOG("[rename]: flags = %d\n", flags);
+    LOG("[rename]: flags = %u\n", flags);
 
     // Check if the path to move/rename exists
     std::string str_old_path(old_location);
@@ -359,7 +362,8 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
     if (!new_id.empty() && flags == RENAME_NOREPLACE) { // newpath exists and should not exist
         LOG("[rename]: RENAME_NOREPLACE flag was set and new_location exists\n");
         return -EEXIST; // taken from http://man7.org/linux/man-pages/man2/rename.2.html
-    } else if (!new_id.empty()) {
+    }
+    if (!new_id.empty()) {
         LOG("[rename]: Removing existing file %s, it's going to be replaced\n", new_location);
         bool success = remove_entry(new_id, auth_header);
         if (!success) {
@@ -554,15 +558,16 @@ int WdFs::rmdir(const char* dir_path) {
     // Get ID of the remote directory
     std::string remote_entry_id = get_path_remote_id(str_path, auth_header);
     printf("[rmdir]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool result = remove_entry(remote_entry_id, auth_header);
-    if (result) {
+    bool success = remove_entry(remote_entry_id, auth_header);
+    if (success) {
         LOG("[rmdir]: Directory remove successful\n");
         // Remove folder from the ID cache
+        // TODO: remove from subfolder count cache
         remote_id_map.erase(str_path);
-    } else {
-        LOG("[rmdir]: Directory remove failed\n");
+        return 0;
     }
-    return 0;
+    LOG("[rmdir]: Directory remove failed\n");
+    return -1;
 }
 
 // Remove a file from the remote system
@@ -572,15 +577,16 @@ int WdFs::unlink(const char* file_path) {
     // Get the ID of the remote file
     std::string remote_entry_id = get_path_remote_id(str_path, auth_header);
     printf("[unlink]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool result = remove_entry(remote_entry_id, auth_header);
-    if (result) {
+    bool success = remove_entry(remote_entry_id, auth_header);
+    if (success) {
         LOG("[unlink]: File remove successful\n");
         // Remove file from the ID cache
+        // TODO: remove from file size cache
         remote_id_map.erase(str_path);
-    } else {
-        LOG("[unlink]: File remove failed\n");
+        return 0;
     }
-    return 0;
+    LOG("[unlink]: File remove failed\n");
+    return -1;
 }
 
 // Create a new directory
@@ -595,7 +601,7 @@ int WdFs::mkdir(const char* path, mode_t mode) {
     std::string prefix_id = get_path_remote_id(path_prefix, auth_header);
     LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
     std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), auth_header);
-    // TODO: improve perfromacne by caching the new foled ID and the local path here
+    // TODO: improve performance by caching the new folder ID and the local path here
     LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());
     return 0;
 }
@@ -689,22 +695,23 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         request_result res = list_entries_multiple(subfolder_id_param.c_str(), auth_header, subfolders);
         if (res == REQUEST_SUCCESS) {
             LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
-            for (auto entry : subfolders) {
-                if (entry.is_dir) subfolder_count_cache[entry.parent_id].subfolder_count++;
+            for (const auto& entry : subfolders) {
+                subfolder_count_cache[entry.parent_id].subfolder_count += entry.is_dir;
             }
         } else if (res == REQUEST_CACHED) {
             // Fill subfolder_count from previously cached values
             LOG("[readdir.subfolder_count_prefetch]: Server sent cache is valid\n");
-            for (auto item : list_entries_multiple_cache) {
+            for (const auto& item : list_entries_multiple_cache) {
                 subfolder_count_cache[item.first].subfolder_count = item.second;
                 subfolder_count_cache[item.first].validity = 1;
             }
         }
 
         LOG("[readdir.subfolder_count_prefetch] Listing subfolder count cache:\n");
-        for (auto item : subfolder_count_cache) {
+        for (const auto& item : subfolder_count_cache) {
             LOG("%s => %d\n", item.first.c_str(), item.second.subfolder_count);
             if (res == REQUEST_SUCCESS) {
+                // TODO: do we actually need this cache, isn't it the same as subfolder_count_cache ??
                 // Save copy of original subfolder counts to be reused if list_entries_multiple is cached
                 list_entries_multiple_cache[item.first] = item.second.subfolder_count;
             }
@@ -717,7 +724,8 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
         return 0;
     } else if (expand_result == 0) {  // has entry but it's a file
-        return 0;
+        //return 0;
+        return -ENOTDIR;
     } else { // remote doesn't have the entry
         return -ENOENT;
     }
@@ -734,6 +742,7 @@ int WdFs::read(const char *path, char *buffer, size_t size, off_t offset, struct
     int bytes_read = 0;
     bool success = read_file(file_id, buffer, (int)offset, (int)size, bytes_read, auth_header);
     LOG("[read]: Actual bytes read from file: %d\n", bytes_read);
-    if (!success) return -1;
-    return bytes_read;
+    return (!success * -1) + (success * bytes_read);
+    //if (!success) return -1;
+    //return bytes_read;
 }
