@@ -83,8 +83,8 @@ Current filesystem operations supported:
 There are also features that I don't know how to interface with a file system like `Sharing files` and other device specific non-file system features.  
 Constantly improve performance where it's possible without compromising on up-to-date state.  
 **TODO**:
-[ ] Look into supporting non-local device communication
-[ ] Get correct timestamps when listing files
+- [ ] Look into supporting non-local device communication
+- [ ] Get correct timestamps when listing files
 
 ### Contribution
 The project accepts contributions in the form of `Pull Requests` and `Issues`.  
