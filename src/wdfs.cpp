@@ -105,7 +105,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
             if (res == REQUEST_SUCCESS) {
                 LOG("[list_entries_expand]: list_entries_cache invalidated\n");
                 *result = cache_results;
-                list_entries_cache.emplace(entry_id, cache_results);
+                list_entries_cache[entry_id] = cache_results;
             } else if (res == REQUEST_CACHED) {
                 LOG("[list_entries_expand]: list_entries_cache is valid\n");
                 *result = list_entries_cache[entry_id];
@@ -137,7 +137,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
                     entry_found = true;
                     // Cache the ID of the entry
                     current_id = current_entry.id;
-                    remote_id_map.emplace(current_full_path, id_cache_value(current_entry.id, current_entry.is_dir));
+                    remote_id_map[current_full_path] = id_cache_value(current_entry.id, current_entry.is_dir);
                     if (current_entry.is_dir) { // The entry is a folder indeed
                         folder_found = true;
                         if (result == NULL && it + 1 == parts.end()) return 1;
@@ -156,7 +156,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
             current_items = list_entries_cache[current_id];
             LOG("[list_entries_expand]: expanding -> results taken from cache\n");
         } else if (res == REQUEST_SUCCESS) {
-            list_entries_cache.emplace(current_id, current_items);
+            list_entries_cache[current_id] = current_items;
             LOG("[list_entries_expand]: expanding -> results taken from server -> results cached\n");
         }
     }
@@ -214,7 +214,7 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
     else if (res == REQUEST_SUCCESS) {
         // current cache invalid
         LOG("[get_subfolder_count]: server returned entries result\n");
-        list_entries_cache.emplace(remote_id, entries);
+        list_entries_cache[remote_id] = entries;
         cache_invalidated = true;
     } else {
         // Request is cached, but not sure if subfolder_count is cached
@@ -229,7 +229,7 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
             subfolder_count += entry.is_dir;
         }
         LOG("[get_subfolder_count]: Pushing %s => %d to subfolder cache\n", remote_id.c_str(), subfolder_count);
-        subfolder_count_cache.emplace(remote_id, subfolder_cache_value(0, subfolder_count));
+        subfolder_count_cache[remote_id] = subfolder_cache_value(0, subfolder_count);
     }
     // subfolder_count cache is 100% up to date at this point
     return subfolder_count_cache[remote_id].subfolder_count;
@@ -310,7 +310,7 @@ int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
         free(buffer);
         LOG("[truncate]: Remote file part copied to temp file on the remote filesystem\n");
         // Bind path to temp file
-        temp_file_binding.emplace(str_path, temp_file_id);
+        temp_file_binding[str_path] = temp_file_id;
         LOG("[truncate]: Temp file binding %s=>%s cached\n", path, temp_file_id.c_str());
         return 0;
     }
@@ -424,7 +424,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
             return -1;
         }
         // Update the ID-local cache with the new ID of the old file
-        remote_id_map.emplace(str_path, id_cache_value(remote_temp_id, false));
+        remote_id_map[str_path] = id_cache_value(remote_temp_id, false);
         // Rename the new file
         bool rename_result = rename_entry(remote_temp_id, file_name, auth_header);
         if (!rename_result) {
@@ -491,7 +491,7 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
         free(buffer);
         LOG("[open]: Remote file copied to temp file on the remote filesystem\n");
         // Bind path to temp file
-        temp_file_binding.emplace(str_path, temp_file_id);
+        temp_file_binding[str_path] = temp_file_id;
         LOG("[open]: Temp file binding %s=>%s cached\n", file_path, temp_file_id.c_str());
         return 0;
     }
@@ -538,7 +538,7 @@ int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
     bool open_result = file_write_open(parent_id, file_name, auth_header, new_id);
     if (!open_result) return -1;
     // Cache new file ID with the create map
-    create_opened_files.emplace(str_path, new_id);
+    create_opened_files[str_path] = new_id;
     LOG("[create]: ID of the new file is: %s\n", new_id.c_str());
 
     return 0;
@@ -594,8 +594,8 @@ int WdFs::mkdir(const char* path, mode_t mode) {
     std::string prefix_id = get_path_remote_id(path_prefix, auth_header);
     LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
     std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), auth_header);
-    remote_id_map.emplace(str_path, id_cache_value(new_id, true));
-    subfolder_count_cache.emplace(new_id, subfolder_cache_value(0, 0));
+    remote_id_map[str_path] = id_cache_value(new_id, true);
+    subfolder_count_cache[new_id] = subfolder_cache_value(0, 0);
     LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());
     return 0;
 }
@@ -657,17 +657,17 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
             // Insert entries to ID cache
             entry_data current = entries[i];
             std::string cache_key(str_path + (str_path == "/" ? "" : "/") + current.name);
-            remote_id_map.emplace(cache_key, id_cache_value(current.id, current.is_dir));
+            remote_id_map[cache_key] = id_cache_value(current.id, current.is_dir);
             // Send the entry's name to the system
             filler(buffer, current.name.c_str(), NULL, 0, FUSE_FILL_DIR_PLUS);
             if (current.is_dir) { // Prepare subfolder count prefetching
                 subfolder_id_param.append(current.id);
                 subfolder_id_param.append(",");
                 subfolder_ids.emplace_back(current.id);
-                subfolder_count_cache.emplace(current.id, subfolder_cache_value(1, 0));
+                subfolder_count_cache[current.id] = subfolder_cache_value(1, 0);
             } else {
                 // Cache prefetched file sizes
-                filesize_cache.emplace(current.id, filesize_cache_value(1, current.size));
+                filesize_cache[current.id] = filesize_cache_value(1, current.size);
             }
         }
 
