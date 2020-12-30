@@ -12,9 +12,9 @@ endif
 
 all: fs locator
 fs: bridge.o Fuse.o wdfs.o wd_bridge.o
-	$(CC) $(CURL_LIBS) $(FUSE_LIBS) bridge.o Fuse.o wdfs.o wd_bridge.o -o ../bin/wd_bridge
+	$(CC) bridge.o Fuse.o wdfs.o wd_bridge.o $(CURL_LIBS) $(FUSE_LIBS) -o ../bin/wd_bridge
 locator: bridge.o device_locator.o
-	$(CC) $(CURL_LIBS) bridge.o device_locator.o -o ../bin/device_locator
+	$(CC) bridge.o device_locator.o $(CURL_LIBS) -o ../bin/device_locator
 clean:
 	rm *.o
 device_locator.o: ../src/device_locator.cpp bridge.o
