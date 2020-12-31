@@ -82,17 +82,17 @@ static size_t header_callback(char *buffer, size_t size, size_t nitems, void *us
     int colon_index = buf.find(":");
     int http_index = buf.find("HTTP/");
     response_data *data = (response_data *)userdata;
-    if (colon_index != -1) {
+    if (http_index == 0) {
+        // HTTP/1.1 200 OK => status code is between the 2 spaces
+        int first_space = buf.find_first_of(" ");
+        int next_space = buf.find(" ", first_space + 1);
+        std::string status_code = buf.substr(first_space + 1, next_space - first_space - 1);
+        data->status_code = std::stoi(status_code);
+    } else if (colon_index != -1) {
         std::string name = buf.substr(0, colon_index);
         // Additional -2 from substring size to remove the trailing \r\n
         std::string value = buf.substr(colon_index + 2, buf.size() - colon_index - 4);
         data->headers.emplace(std::move(name), std::move(value));
-    } else if (http_index == 0) {
-        // HTTP/1.1 200 OK => status code is between the 2 spaces
-        int first_space = buf.find_first_of(" ");
-        int last_space = buf.find_last_of(" ");
-        std::string status_code = buf.substr(first_space + 1, last_space - first_space - 1);
-        data->status_code = std::stoi(status_code);
     }
     return nitems * size;
 }
@@ -611,11 +611,12 @@ bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
 
 // Get user devices with their names and their IDs
 bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list) {
-    //https://device.mycloud.com/device/v1/user/{auth0_user_id}
+    // https://device.mycloud.com/device/v1/user/{auth0_user_id} (legacy URL see new URL below)
+    // https://prod.wdckeystone.com/device/v1/user/{auth0_user_id}
 
     char request_url[43 + user_id.size()];
     std::string escaped_user_id = encode_url_part(user_id.c_str());
-    sprintf(request_url, "https://device.mycloud.com/device/v1/user/%s", escaped_user_id.c_str());
+    sprintf(request_url, "https://prod.wdckeystone.com/device/v1/user/%s", escaped_user_id.c_str());
 
     std::vector<std::string> headers {
         auth_token
