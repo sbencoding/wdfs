@@ -1,5 +1,6 @@
 #include "json.hpp"
 #include "bridge.hpp"
+#include "pthread.h"
 #include <stdio.h>
 #include <curl/curl.h>
 #include <string>
@@ -33,8 +34,40 @@ std::unordered_map<std::string, std::string> etag_mapping;
 // Store the URL start with the given remote device endpoint
 char *request_start = NULL;
 
-// Set the remote host for the requests
-void set_wd_host(const char *wdhost) {
+// Shared CURL session handle
+CURLSH *share;
+
+// Mutex array for shared curl handle locking
+std::vector<pthread_mutex_t> mutex_list(5);
+
+int lock_data_to_int(curl_lock_data data) {
+    switch (data) {
+        case CURL_LOCK_DATA_COOKIE:
+            return 0;
+        case CURL_LOCK_DATA_CONNECT:
+            return 1;
+        case CURL_LOCK_DATA_SSL_SESSION:
+            return 2;
+        case CURL_LOCK_DATA_PSL:
+            return 3;
+        case CURL_LOCK_DATA_DNS:
+            return 4;
+    }
+    return -1;
+}
+
+void curl_share_lock(CURL *handle, curl_lock_data data, curl_lock_access access, void *userptr) {
+    int key = lock_data_to_int(data);
+    pthread_mutex_lock(&mutex_list[key]);
+}
+
+void curl_share_unlock(CURL *handle, curl_lock_data data, void *userptr) {
+    int key = lock_data_to_int(data);
+    pthread_mutex_unlock(&mutex_list[key]);
+}
+
+// Initialize the network bridge
+bool init_bridge(const char* wdhost) {
     // Size of the URL start + 1 for zero termination
     int str_size = 23 + strlen(wdhost);
     // Allocate / reallocate the size of the buffer
@@ -42,7 +75,46 @@ void set_wd_host(const char *wdhost) {
         request_start = (char *) realloc(request_start, str_size);
     } else request_start = (char *) malloc(str_size);
     // Construct the URL start
+
     sprintf(request_start, "https://%s.remotewd.com/", wdhost);
+    // Init the global CURL environment
+    curl_global_init(CURL_GLOBAL_ALL);
+
+    // Init mutex lock array
+    for (int i = 0; i < 5; ++i) {
+        pthread_mutex_init(&mutex_list[i], NULL);
+    }
+
+    // Init CURL handle
+    share = curl_share_init();
+    if (!share) {
+        return false;
+    }
+    // Setup shared data
+    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
+    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_PSL);
+    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+    // Setup locking functions
+    curl_share_setopt(share, CURLSHOPT_LOCKFUNC, curl_share_lock);
+    curl_share_setopt(share, CURLSHOPT_UNLOCKFUNC, curl_share_unlock);
+
+    return true;
+}
+
+// Release the network bridge
+void release_bridge() {
+    // Release shared CURL session
+    curl_share_cleanup(share);
+
+    // Shutdown CURL global environment
+    curl_global_cleanup();
+
+    // Release mutex lock array
+    for (int i = 0; i < 5; ++i) {
+        pthread_mutex_destroy(&mutex_list[i]);
+    }
 }
 
 // Convert the given timestamp to the required format by the server
@@ -115,11 +187,10 @@ static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, b
 
 // Initialize a basic request
 static CURL* request_base(const char* method, const char* url, const std::vector<std::string> &headers, const char *request_body, long size, response_data &rd, struct curl_slist *chunk) {
-    CURL *curl;
-    curl_global_init(CURL_GLOBAL_DEFAULT);
-    
-    curl = curl_easy_init();
+    CURL *curl = curl_easy_init();
     if (curl) {
+        // Set shared CURL handle
+        curl_easy_setopt(curl, CURLOPT_SHARE, share);
         // Set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, url);
         // Disable IPv6 DNS resolving, as it sometimes results in large timeouts
@@ -153,13 +224,11 @@ static void request_free(CURL *curl, struct curl_slist *chunk, CURLcode res) {
     if (res != CURLE_OK) fprintf(stderr, "request failed: %s\n", curl_easy_strerror(res));
     curl_slist_free_all(chunk);
     curl_easy_cleanup(curl);
-    curl_global_cleanup();
 }
 
 static std::string encode_url_part(const char* url_part) {
     // Init curl
     CURL *curl;
-    curl_global_init(CURL_GLOBAL_DEFAULT);
     curl = curl_easy_init();
     // Escape URL part
     char *escaped = curl_easy_escape(curl, url_part, strlen(url_part));
@@ -167,7 +236,6 @@ static std::string encode_url_part(const char* url_part) {
     // Free char pointer and curl
     curl_free(escaped);
     curl_easy_cleanup(curl);
-    curl_global_cleanup();
     return str_escaped;
 }
 
@@ -198,7 +266,7 @@ static response_data make_request(const char* method, const char* url, const std
     std::string response_body;
     struct curl_slist *chunk = NULL;
 
-    // Get base request
+    // Configure base request
     CURL *curl = request_base(method, url, headers, request_body, size, rd, chunk);
     if (curl) {
         // Collect response body
@@ -211,7 +279,7 @@ static response_data make_request(const char* method, const char* url, const std
         debug_trip_time(curl, url);
 #endif
         request_free(curl, chunk, res);
-    } else curl_global_cleanup(); // Make sure to release curl even if init failed
+    }
     return rd;
 }
 
@@ -410,8 +478,6 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
 
     CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
     if (curl) {
-        // disable IPv6 DNS resolving, as it sometimes results in large timeouts
-        curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         buffer_result current_result(0, (char*)buffer);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
@@ -427,7 +493,7 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
             printf("read request finished with status code 206\n");
             return true;
         }
-    } else curl_global_cleanup();
+    }
     return false;
 }
 

@@ -35,11 +35,16 @@ int main (int argc, char *argv[]) {
 
     std::string authorization_header;
 
-    // Set the host to send requests to
-    set_wd_host(conf.host);
+    // Initialize the network bridge
+    if (!init_bridge(conf.host)) {
+        fprintf(stderr, "Network bridge initialization failed... shutting down\n");
+        release_bridge();
+        return 1;
+    }
 
     if (!login(conf.username, conf.password, authorization_header, NULL)) {
         fprintf(stderr, "Login failed... shutting down\n");
+        release_bridge();
         return 1;
     }
 
@@ -47,5 +52,6 @@ int main (int argc, char *argv[]) {
     fs.set_authorization_header(authorization_header);
 
     int result = fs.run(3, args.argv);
+    release_bridge();
     return result;
 }
