@@ -6,6 +6,8 @@
 #include <vector>
 #include <time.h>
 
+#define DEBUG_TIME
+
 using json = nlohmann::json;
 
 // Data to pass around in CURL header callback
@@ -120,6 +122,8 @@ static CURL* request_base(const char* method, const char* url, const std::vector
     if (curl) {
         // Set url of the request
         curl_easy_setopt(curl, CURLOPT_URL, url);
+        // Disable IPv6 DNS resolving, as it sometimes results in large timeouts
+        curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         // Set header callback
         curl_easy_setopt(curl, CURLOPT_HEADERFUNCTION, header_callback);
         // Set object to pass to header callback
@@ -167,6 +171,26 @@ static std::string encode_url_part(const char* url_part) {
     return str_escaped;
 }
 
+#ifdef DEBUG_TIME
+static void debug_trip_time(CURL *curl, const char* url) {
+    // Load timestamps
+    curl_off_t dns, connect, ssl, total;
+    curl_easy_getinfo(curl, CURLINFO_NAMELOOKUP_TIME_T, &dns);
+    curl_easy_getinfo(curl, CURLINFO_CONNECT_TIME_T, &connect);
+    curl_easy_getinfo(curl, CURLINFO_APPCONNECT_TIME_T, &ssl);
+    curl_easy_getinfo(curl, CURLINFO_TOTAL_TIME_T, &total);
+    int time_total = total / 1000;
+    if (time_total >= 150) {
+        // Print timestamp data
+        printf("Potentially high request time (%s):\n", url);
+        printf("\tDNS: %" CURL_FORMAT_CURL_OFF_T ".%02ld\n", dns / 1000, (long)(dns % 1000));
+        printf("\tCONNECT: %" CURL_FORMAT_CURL_OFF_T ".%02ld\n", connect / 1000, (long)(connect % 1000));
+        printf("\tSSL: %" CURL_FORMAT_CURL_OFF_T ".%02ld\n", ssl / 1000, (long)(ssl % 1000));
+        printf("\tTOTAL: %" CURL_FORMAT_CURL_OFF_T ".%02ld\n", total / 1000, (long)(total % 1000));
+    }
+}
+#endif
+
 // Perform a single request and get string response
 static response_data make_request(const char* method, const char* url, const std::vector<std::string> &headers, const char *request_body, long size) {
     CURLcode res;
@@ -183,6 +207,9 @@ static response_data make_request(const char* method, const char* url, const std
 
         res = curl_easy_perform(curl);
         rd.response_body = response_body;
+#ifdef DEBUG_TIME
+        debug_trip_time(curl, url);
+#endif
         request_free(curl, chunk, res);
     } else curl_global_cleanup(); // Make sure to release curl even if init failed
     return rd;
@@ -383,6 +410,8 @@ bool read_file(const std::string &file_id, void *buffer, int offset, int size, i
 
     CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
     if (curl) {
+        // disable IPv6 DNS resolving, as it sometimes results in large timeouts
+        curl_easy_setopt(curl, CURLOPT_IPRESOLVE, CURL_IPRESOLVE_V4);
         buffer_result current_result(0, (char*)buffer);
         curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
         curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
