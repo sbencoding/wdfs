@@ -300,7 +300,7 @@ bool generic_handler(int status_code, std::string &response_body) {
 
 // Login to the remote device
 bool login(const char* username, const char* password, std::string &session_id, std::string *access_token) {
-    const char* auth_url = "https://wdc.auth0.com/oauth/ro";
+    const char* auth_url = "https://prod.wdckeystone.com/authrouter/oauth/ro";
     const char* wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
     json req = {
         {"client_id", wdcAuth0ClientID},
