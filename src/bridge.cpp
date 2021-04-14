@@ -697,7 +697,7 @@ bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
     response_data rd = make_request("GET", request_url, headers, NULL, 0L);
     if (generic_handler(rd.status_code, rd.response_body)) {
         auto json_response = json::parse(rd.response_body);
-        std::string id_token = json_response["user_id"];
+        std::string id_token = json_response["sub"];
         user_id = id_token;
         return true;
     }
