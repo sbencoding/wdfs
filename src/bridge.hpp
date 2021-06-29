@@ -35,4 +35,4 @@ bool init_bridge(const char* host);
 void release_bridge();
 bool auth0_get_userid(const std::string &auth_token, std::string &user_id);
 bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list);
-bool set_remote_mode(const std::string &auth_token, const std::string &user_id, const char* wdhost);
+bool detect_endpoint(const std::string &auth_token, const char* wdhost);

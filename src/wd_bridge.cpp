@@ -35,7 +35,6 @@ int main (int argc, char *argv[]) {
     }
 
     std::string authorization_header;
-    bool is_remote = true;
 
     // Initialize the network bridge
     if (!init_bridge(conf.host)) {
@@ -44,36 +43,21 @@ int main (int argc, char *argv[]) {
         return 1;
     }
 
-    // Login to device and handle local/remote connection
-    // TODO: figure out if we need local or remote connection automatically
-    if (is_remote) {
-        std::string access_token;
-        bool login_result = login(conf.username, conf.password, authorization_header, &access_token);
-        if (!login_result) {
-            fprintf(stderr, "Login failed... shutting down\n");
-            release_bridge();
-            return 1;
-        }
-        std::string auth0_user_id;
-        bool userid_result = auth0_get_userid(access_token, auth0_user_id);
-        if (!userid_result) {
-            fprintf(stderr, "Failed to get user id... shutting down\n");
-            release_bridge();
-            return 1;
-        }
-        bool remote_result = set_remote_mode(authorization_header, auth0_user_id, conf.host);
-        if (!remote_result) {
-            fprintf(stderr, "Failed to start in remote mode... shutting down\n");
-            release_bridge();
-            return 1;
-        }
-    } else {
-        bool login_result = login(conf.username, conf.password, authorization_header, NULL);
-        if (!login_result) {
-            fprintf(stderr, "Login failed... shutting down\n");
-            release_bridge();
-            return 1;
-        }
+    // Login to WD
+    std::string access_token;
+    bool login_result = login(conf.username, conf.password, authorization_header, &access_token);
+    if (!login_result) {
+        fprintf(stderr, "Login failed... shutting down\n");
+        release_bridge();
+        return 1;
+    }
+
+    // Select device endpoint to use
+    bool endpoint_result = detect_endpoint(authorization_header, conf.host);
+    if (!endpoint_result) {
+        fprintf(stderr, "Failed to detect the endpoint... shutting down\n");
+        release_bridge();
+        return 1;
     }
 
     WdFs fs;
