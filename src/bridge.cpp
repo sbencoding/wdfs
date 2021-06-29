@@ -68,17 +68,7 @@ void curl_share_unlock(CURL *handle, curl_lock_data data, void *userptr) {
 
 
 // Initialize the network bridge
-bool init_bridge(const char* wdhost) {
-    // Size of the URL start + 1 for zero termination
-    int str_size = 23 + strlen(wdhost);
-
-    // Allocate / reallocate the size of the buffer
-    if (request_start != NULL) {
-        request_start = (char *) realloc(request_start, str_size);
-    } else request_start = (char *) malloc(str_size);
-    // Construct the URL start
-
-    sprintf(request_start, "https://%s.remotewd.com/", wdhost);
+bool init_bridge() {
     // Init the global CURL environment
     curl_global_init(CURL_GLOBAL_ALL);
 

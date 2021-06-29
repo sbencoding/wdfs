@@ -37,7 +37,7 @@ int main (int argc, char *argv[]) {
     std::string authorization_header;
 
     // Initialize the network bridge
-    if (!init_bridge(conf.host)) {
+    if (!init_bridge()) {
         fprintf(stderr, "Network bridge initialization failed... shutting down\n");
         release_bridge();
         return 1;

@@ -31,7 +31,7 @@ bool write_file(const std::string &auth_token, const std::string &file_location,
 bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token);
 bool move_entry(const std::string &entry_id, const std::string &new_parent_id, const std::string &auth_token);
 bool set_modification_time(const std::string &entry_id, const time_t &new_time, const std::string &auth_token);
-bool init_bridge(const char* host);
+bool init_bridge();
 void release_bridge();
 bool auth0_get_userid(const std::string &auth_token, std::string &user_id);
 bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list);
