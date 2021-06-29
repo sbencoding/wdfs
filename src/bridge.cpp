@@ -66,10 +66,12 @@ void curl_share_unlock(CURL *handle, curl_lock_data data, void *userptr) {
     pthread_mutex_unlock(&mutex_list[key]);
 }
 
+
 // Initialize the network bridge
 bool init_bridge(const char* wdhost) {
     // Size of the URL start + 1 for zero termination
     int str_size = 23 + strlen(wdhost);
+
     // Allocate / reallocate the size of the buffer
     if (request_start != NULL) {
         request_start = (char *) realloc(request_start, str_size);
@@ -730,4 +732,64 @@ bool get_user_devices(const std::string &auth_token, const std::string &user_id,
         return true;
     }
     return false;
+}
+
+
+// Get user devices with their names and their IDs
+bool get_device_portforward(const std::string &auth_token, const std::string &user_id, const std::string& device_id, int& open_port) {
+    // https://device.mycloud.com/device/v1/user/{auth0_user_id} (legacy URL see new URL below)
+    // https://prod.wdckeystone.com/device/v1/user/{auth0_user_id}
+
+    // TODO: only fetch one device info see: https://developer.westerndigital.com/develop/wd-my-cloud-home/api/device/get--v1-device--deviceid-.html
+    char request_url[43 + user_id.size()];
+    std::string escaped_user_id = encode_url_part(user_id.c_str());
+    sprintf(request_url, "https://prod.wdckeystone.com/device/v1/user/%s", escaped_user_id.c_str());
+
+    std::vector<std::string> headers {
+        auth_token
+    };
+
+    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+    if (generic_handler(rd.status_code, rd.response_body)) {
+        auto json_response = json::parse(rd.response_body);
+        auto data_obj = json_response["data"];
+        for (int i = 0; i < data_obj.size(); i++) {
+            std::string cur_id = data_obj[i]["deviceId"];
+            if (device_id == cur_id) {
+                open_port = data_obj[i]["network"]["portForwardPort"];
+                return true;
+            }
+        }
+        return true;
+    }
+    return false;
+}
+
+bool set_remote_mode(const std::string& auth_token, const std::string& user_id, const char* wdhost) {
+    int port;
+    std::string device_id(wdhost);
+
+    // remove "device-local-" from the start
+    device_id = device_id.substr(13);
+    bool res = get_device_portforward(auth_token, user_id, device_id, port);
+    if (!res) {
+        fprintf(stderr, "Error, failed to get forwarded port!");
+        return false;
+    }
+    std::string str_port = std::to_string(port);
+
+    // Add "device-" to the start
+    device_id = "device-" + device_id;
+    // Size of the URL start + 1 for zero termination + 1 for colon + str_port.size() for port
+    int str_size = 24 + device_id.size() + str_port.size();
+
+    // Allocate / reallocate the size of the buffer
+    if (request_start != NULL) {
+        request_start = (char *) realloc(request_start, str_size);
+    } else request_start = (char *) malloc(str_size);
+
+    // Construct the URL start
+    sprintf(request_start, "https://%s.remotewd.com:%s/", device_id.c_str(), str_port.c_str());
+    printf("New request URL: %s\n", request_start);
+    return true;
 }
