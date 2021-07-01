@@ -748,7 +748,7 @@ bool get_device_endpoints(const std::string &auth_token, const std::string& devi
 }
 
 // Test the connection to a given endpoint
-bool test_connection(const std::string endpoint) {
+bool test_connection(const std::string& endpoint) {
     // Data for CURL request
     CURLcode res;
     response_data rd;
@@ -756,8 +756,8 @@ bool test_connection(const std::string endpoint) {
     struct curl_slist *chunk = NULL;
 
     // URL + empty headers
-    char request_url[23 + strlen(request_start)];
-    sprintf(request_url, "%ssdk/v1/device?fields=id", request_start);
+    char request_url[24 + endpoint.size()];
+    sprintf(request_url, "%s/sdk/v1/device?fields=id", endpoint.c_str());
     std::vector<std::string> headers;
 
     // Construct the options request
