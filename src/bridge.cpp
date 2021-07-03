@@ -740,7 +740,7 @@ bool get_device_endpoints(const std::string &auth_token, const std::string& devi
     if (generic_handler(rd.status_code, rd.response_body)) {
         auto json_response = json::parse(rd.response_body);
         auto data_obj = json_response["data"];
-        local = data_obj["network"]["internalURL"];
+        local = "https://" + data_obj["network"]["internalDNSName"].get<std::string>();
         remote = data_obj["network"]["portForwardURL"];
         return true;
     }
