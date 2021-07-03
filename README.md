@@ -42,10 +42,10 @@ If you don't know this don't worry read the [Device ID](#Device-ID) section of t
 
 After specifying the correct arguments `wd_bridge` will run and mount the root of your device to the given mount point.  
 You can now start using `ls` and `cat` etc. to explore the file system and the files.  
+*note*: If you're not on the same network as the device, `wd_bride` will automatically try to use the *port forwarding* connection method.  
 
 ### Device ID
 `wd_bridge` has to know the ID of the device to connect to, in order to mount it.  
-*note*: The bridge has only been tested locally, remote connections (e.g. your not on the same network as your device) may not work.  
 To figure out the ID of the device you wish to mount, I've written a separate program called `device_locator`.  
 ##### Building
 Go into the `build` folder and execute the `make locator` command, this should build the `device_locator` program.  
@@ -83,8 +83,10 @@ Current filesystem operations supported:
 There are also features that I don't know how to interface with a file system like `Sharing files` and other device specific non-file system features.  
 Constantly improve performance where it's possible without compromising on up-to-date state.  
 **TODO**:
-- [ ] Look into supporting non-local device communication
+- [x] Look into supporting non-local device communication
 - [ ] Get correct timestamps when listing files
+- [ ] Investigate long running connections (i.e. re-login if session times out, switch from remote to local connection and vice-versa automatically when needed)
+- [ ] Investigate options to automatically mount with system startup using `fstab`
 
 ### Contribution
 The project accepts contributions in the form of `Pull Requests` and `Issues`.  
