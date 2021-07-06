@@ -1,6 +1,7 @@
 #include "bridge.hpp"
 #include <stdio.h>
 #include <vector>
+#include <string_view>
 
 int main (int argc, char *argv[]) {
     if (argc != 3) {
@@ -9,8 +10,8 @@ int main (int argc, char *argv[]) {
         return 1;
     }
 
-    char* username = argv[1];
-    char* password = argv[2];
+    std::string_view username(argv[1]);
+    std::string_view password(argv[2]);
     std::string authorization_header;
     std::string access_token;
     

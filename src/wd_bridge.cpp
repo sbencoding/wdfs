@@ -2,6 +2,7 @@
 #include "bridge.hpp"
 #include <stdio.h>
 #include <stddef.h>
+#include <string_view>
 
 #define WDFS_OPT(t, p, v) { t, offsetof(struct WdFsConfig, p), v }
 
@@ -45,7 +46,13 @@ int main (int argc, char *argv[]) {
 
     // Login to WD
     std::string access_token;
-    bool login_result = login(conf.username, conf.password, authorization_header, &access_token);
+    std::string_view user(conf.username);
+    std::string_view pass(conf.password);
+    bool login_result = login(user, pass, authorization_header, &access_token);
+
+    free(conf.username);
+    free(conf.password);
+
     if (!login_result) {
         fprintf(stderr, "Login failed... shutting down\n");
         release_bridge();
@@ -53,7 +60,8 @@ int main (int argc, char *argv[]) {
     }
 
     // Select device endpoint to use
-    bool endpoint_result = detect_endpoint(authorization_header, conf.host);
+    std::string_view device_id(conf.host);
+    bool endpoint_result = detect_endpoint(authorization_header, device_id);
     if (!endpoint_result) {
         fprintf(stderr, "Failed to detect the endpoint... shutting down\n");
         release_bridge();
@@ -65,5 +73,6 @@ int main (int argc, char *argv[]) {
 
     int result = fs.run(3, args.argv);
     release_bridge();
+    free(conf.host);
     return result;
 }

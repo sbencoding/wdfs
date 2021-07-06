@@ -1,5 +1,6 @@
 #include <vector>
 #include <string>
+#include <string_view>
 
 struct entry_data {
     int size;
@@ -18,7 +19,7 @@ enum request_result {
     REQUEST_CACHED
 };
 
-bool login(const char* username, const char* password, std::string &session_id, std::string *access_token);
+bool login(std::string_view username, std::string_view password, std::string &session_id, std::string *access_token);
 request_result list_entries(const char* path, const std::string &auth_token, std::vector<entry_data> &entries);
 request_result list_entries_multiple(const char* ids, const std::string &auth_token, std::vector<entry_data> &entries);
 std::string make_dir(const char* folder_name, const char* parent_id, const std::string &auth_header);
@@ -35,4 +36,4 @@ bool init_bridge();
 void release_bridge();
 bool auth0_get_userid(const std::string &auth_token, std::string &user_id);
 bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list);
-bool detect_endpoint(const std::string &auth_token, const char* wdhost);
+bool detect_endpoint(const std::string &auth_token, std::string_view wdhost);

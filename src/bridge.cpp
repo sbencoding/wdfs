@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <time.h>
+#include <string_view>
 
 #define DEBUG_TIME
 
@@ -291,7 +292,7 @@ bool generic_handler(int status_code, std::string &response_body) {
 }
 
 // Login to the remote device
-bool login(const char* username, const char* password, std::string &session_id, std::string *access_token) {
+bool login(std::string_view username, std::string_view password, std::string &session_id, std::string *access_token) {
     const char* auth_url = "https://prod.wdckeystone.com/authrouter/oauth/ro";
     const char* wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
     json req = {
@@ -726,11 +727,11 @@ bool get_user_devices(const std::string &auth_token, const std::string &user_id,
 
 
 // Get user devices with their names and their IDs
-bool get_device_endpoints(const std::string &auth_token, const std::string& device_id, std::string& local, std::string& remote) {
+bool get_device_endpoints(const std::string &auth_token, std::string_view device_id, std::string& local, std::string& remote) {
     // https://prod.wdckeystone.com/device/v1/device/{device_id}
 
     char request_url[46 + device_id.size()];
-    sprintf(request_url, "https://prod.wdckeystone.com/device/v1/device/%s", device_id.c_str());
+    sprintf(request_url, "https://prod.wdckeystone.com/device/v1/device/%s", device_id.data());
 
     std::vector<std::string> headers {
         auth_token
@@ -780,15 +781,10 @@ bool test_connection(const std::string& endpoint) {
 }
 
 // Detect the endpoint (local/remote) to use
-bool detect_endpoint(const std::string& auth_token, const char* wdhost) {
-    std::string device_id(wdhost);
-
-    // remove "device-local-" from the start
-    device_id = device_id.substr(13);
-
+bool detect_endpoint(const std::string& auth_token, std::string_view wdhost) {
     // Fetch possible endpoints
     std::string local_url, remote_url;
-    bool res = get_device_endpoints(auth_token, device_id, local_url, remote_url);
+    bool res = get_device_endpoints(auth_token, wdhost.substr(13), local_url, remote_url);
     if (!res) {
         fprintf(stderr, "Error, failed to get device endpoints!");
         return false;
