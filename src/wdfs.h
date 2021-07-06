@@ -1,8 +1,8 @@
 #ifndef __WDFS_H_
 #define __WDFS_H_
 
-#include "Fuse.h"
-#include "Fuse-impl.h"
+#include "../include/Fuse.h"
+#include "../include/Fuse-impl.h"
 #include <string>
 
 class WdFs : public Fusepp::Fuse<WdFs> {

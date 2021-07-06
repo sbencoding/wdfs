@@ -1,6 +1,6 @@
 #include "wdfs.h"
 #include "bridge.hpp"
-#include "Fuse-impl.h"
+#include "../include/Fuse-impl.h"
 #include <stdio.h>
 #include <unistd.h>
 #include <time.h>

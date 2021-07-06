@@ -1,4 +1,4 @@
-#include "json.hpp"
+#include "../include/json.hpp"
 #include "bridge.hpp"
 #include "pthread.h"
 #include <stdio.h>

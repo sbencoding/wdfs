@@ -23,7 +23,7 @@ wd_bridge.o: ../src/wd_bridge.cpp wdfs.o bridge.o
 	$(CC) $(FUSE_FLAGS) -c ../src/wd_bridge.cpp
 wdfs.o: ../src/wdfs.cpp ../src/wdfs.h
 	$(CC) $(FUSE_FLAGS) -c ../src/wdfs.cpp
-bridge.o: ../src/bridge.cpp ../src/bridge.hpp ../src/json.hpp
+bridge.o: ../src/bridge.cpp ../src/bridge.hpp ../include/json.hpp
 	$(CC) -c ../src/bridge.cpp
-Fuse.o: ../src/Fuse.cpp ../src/Fuse.h ../src/Fuse-impl.h
+Fuse.o: ../include/Fuse.cpp ../include/Fuse.h ../include/Fuse-impl.h
 	$(CC) $(FUSE_FLAGS) -c ../src/Fuse.cpp
