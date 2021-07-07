@@ -73,7 +73,7 @@ void WdFs::set_authorization_header(std::string authorization_header) {
 }
 
 // Split a string and get the individual parts
-std::vector<std::string> split_string(const std::string &input, char delimiter) {
+std::vector<std::string> split_string(const std::string &input, const char delimiter) {
     std::vector<std::string> parts;
     int prev = 0;
     while (prev < input.size()) {
@@ -593,7 +593,7 @@ int WdFs::mkdir(const char* path, mode_t mode) {
     LOG("[mkdir]: Path prefix is %s\n", path_prefix.c_str());
     std::string prefix_id = get_path_remote_id(path_prefix, auth_header);
     LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
-    std::string new_id = make_dir(folder_name.c_str(), prefix_id.c_str(), auth_header);
+    std::string new_id = make_dir(folder_name, prefix_id, auth_header);
     remote_id_map[str_path] = id_cache_value(new_id, true);
     subfolder_count_cache[new_id] = subfolder_cache_value(0, 0);
     LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());

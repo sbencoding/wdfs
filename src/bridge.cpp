@@ -113,6 +113,7 @@ void release_bridge() {
 
 // Convert the given timestamp to the required format by the server
 std::string to_iso_time(const time_t &t) {
+    // Note: time_t is passed by fuse
     struct tm *tmp;
     tmp = localtime(&t);
     if (tmp == NULL) {
@@ -180,7 +181,7 @@ static size_t collect_response_bytes(void *content, size_t size, size_t nmemb, b
 }
 
 // Initialize a basic request
-static CURL* request_base(const char* method, const std::string& url, const std::vector<std::string> &headers, const char *request_body, long size, response_data &rd, struct curl_slist *chunk) {
+static CURL* request_base(std::string_view method, const std::string& url, const std::vector<std::string> &headers, const char *request_body, long size, response_data &rd, struct curl_slist *chunk) {
     CURL *curl = curl_easy_init();
     if (curl) {
         // Set shared CURL handle
@@ -195,7 +196,7 @@ static CURL* request_base(const char* method, const std::string& url, const std:
         curl_easy_setopt(curl, CURLOPT_HEADERDATA, &rd);
        
         // Set request method
-        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method);
+        curl_easy_setopt(curl, CURLOPT_CUSTOMREQUEST, method.data());
 
         // Set request headers
         for (const std::string& header : headers) {
@@ -254,7 +255,7 @@ static void debug_trip_time(CURL *curl, const std::string& url) {
 #endif
 
 // Perform a single request and get string response
-static response_data make_request(const char* method, const std::string& url, const std::vector<std::string> &headers, const char *request_body, long size) {
+static response_data make_request(std::string_view method, const std::string& url, const std::vector<std::string> &headers, const char *request_body, long size) {
     CURLcode res;
     response_data rd;
     std::string response_body;
@@ -401,8 +402,7 @@ request_result list_entries_multiple(const std::string& ids, const std::string &
 }
 
 // Create a new folder on the remote system
-std::string make_dir(const char* folder_name, const char* parent_folder_id, const std::string &auth_token) {
-    //TODO: params std::string
+std::string make_dir(const std::string& folder_name, const std::string& parent_folder_id, const std::string &auth_token) {
     const std::string request_url = fmt::format("{}sdk/v2/files?resolveNameConflict=true", request_start);
 
     std::vector<std::string> headers {
@@ -417,7 +417,6 @@ std::string make_dir(const char* folder_name, const char* parent_folder_id, cons
     };
 
     const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
-    // TODO: can we pass the std::string instead?
     response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
         printf("mkdir request finished with status code 201\n");
@@ -543,16 +542,14 @@ bool file_write_open(const std::string &parent_id, const std::string &file_name,
 
     // Write request body
     std::string current_time = get_formatted_time();
-    // TODO: can't we use std::string here?
     json req = {
-        {"name", file_name.c_str()},
-        {"parentID", parent_id.c_str()},
-        {"mTime", current_time.c_str()},
+        {"name", file_name},
+        {"parentID", parent_id},
+        {"mTime", current_time},
     };
 
     const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
 
-    // TODO can we use std::string here?
     response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
         if (rd.headers.find("location") != rd.headers.end()) { 
@@ -595,10 +592,9 @@ bool rename_entry(const std::string &entry_id, const std::string &new_name, cons
 
     // Write request body
     std::string current_time = get_formatted_time();
-    // TODO: use std::string
     json req = {
-        {"name", new_name.c_str()},
-        {"mTime", current_time.c_str()}
+        {"name", new_name},
+        {"mTime", current_time}
     };
 
     std::string rbody = req.dump();
@@ -623,9 +619,8 @@ bool set_modification_time(const std::string &entry_id, const time_t &new_time, 
 
     // Write request body
     std::string time_to_set = to_iso_time(new_time);
-    // TODO: use std::string
     json req = {
-        {"mTime", time_to_set.c_str()}
+        {"mTime", time_to_set}
     };
 
     std::string rbody = req.dump();
@@ -650,14 +645,12 @@ bool move_entry(const std::string &entry_id, const std::string &new_parent_id, c
 
     // Write request body
     std::string current_time = get_formatted_time();
-    // TODO: use std::string
     json req = {
-        {"parentID", new_parent_id.c_str()},
+        {"parentID", new_parent_id},
     };
 
     std::string rbody = req.dump();
 
-    // TODO: use std::string
     response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
     if (generic_handler(rd.status_code, rd.response_body)) {
         printf("move_entry request finished with status code 204\n");
