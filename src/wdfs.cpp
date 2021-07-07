@@ -100,7 +100,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
         if (result != NULL) {
             std::string entry_id = remote_id_map[path].id;
             std::vector<entry_data> cache_results;
-            request_result res = list_entries(entry_id.c_str(), auth_header, cache_results);
+            request_result res = list_entries(entry_id, auth_header, cache_results);
             LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
             if (res == REQUEST_SUCCESS) {
                 LOG("[list_entries_expand]: list_entries_cache invalidated\n");
@@ -151,7 +151,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
 
         current_items.clear();
         // List entries for the current path part
-        request_result res = list_entries(current_id.c_str(), auth_header, current_items);
+        request_result res = list_entries(current_id, auth_header, current_items);
         if (res == REQUEST_CACHED) {
             current_items = list_entries_cache[current_id];
             LOG("[list_entries_expand]: expanding -> results taken from cache\n");
@@ -209,7 +209,7 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
     }
     std::vector<entry_data> entries;
     bool cache_invalidated = false;
-    request_result res = list_entries(remote_id.c_str(), auth_header, entries);
+    request_result res = list_entries(remote_id, auth_header, entries);
     if (res == REQUEST_FAILED) return -2;
     else if (res == REQUEST_SUCCESS) {
         // current cache invalid
@@ -679,7 +679,7 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         // Prefetch subfolder counts
         subfolder_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
         std::vector<entry_data> subfolders;
-        request_result res = list_entries_multiple(subfolder_id_param.c_str(), auth_header, subfolders);
+        request_result res = list_entries_multiple(subfolder_id_param, auth_header, subfolders);
         if (res == REQUEST_SUCCESS) {
             LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
             for (const auto& entry : subfolders) {
