@@ -93,6 +93,7 @@ std::vector<std::string> split_string(const std::string &input, const char delim
 // Returns: 1 => folder found; 0 => folder not found, entry exists; -1 => entry doesn't exist
 int list_entries_expand(const std::string &path, std::vector<entry_data> *result, const std::string &auth_header) {
     // Checks if the ID of the local path is cached
+    // TODO: enum of global constant for return value
     if (remote_id_map.find(path) != remote_id_map.end()) {
         LOG("[list_entries_expand]: Corresponding ID for %s was found in the cache\n", path.c_str());
         LOG("[list_entries_expand]: Path's ID is: %s (%d)\n", remote_id_map[path].id.c_str(), remote_id_map[path].is_dir);
@@ -170,7 +171,6 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
 
 // Get the ID of the remote entry corresponding to the local path given
 std::string get_path_remote_id(const std::string &path, const std::string &auth_header) {
-    // !FIXME: check create_opened cache for new files that are not listed by the server
     if (path == "/" || path == "") { // check if path is root
         return "root";
     } else if (remote_id_map.find(path) != remote_id_map.end()) { // check if path is in the cache
@@ -195,6 +195,7 @@ std::string get_path_remote_id(const std::string &path, const std::string &auth_
 // Get the number of sub folders of a folder on the remote system
 int get_subfolder_count(const std::string &path, const std::string &auth_header) {
     LOG("[get_subfolder_count]: Requesting subfolder count for %s\n", path.c_str());
+    // TODO: return enum or global constant
     std::string remote_id = get_path_remote_id(path, auth_header);
     if (remote_id.empty()) return -2; // Server doesn't have this entry
     if (create_opened_files.find(path) != create_opened_files.end() || (remote_id != "root" && !remote_id_map[path].is_dir)) return -1; // Entry is not a directory
@@ -269,8 +270,9 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
 int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
     LOG("[truncate]: Called for path %s\n Offset: %d\n", path, offset);
     std::string str_path(path);
-    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
-    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
+    int last_slash = str_path.find_last_of('/');
+    std::string parent_path(str_path.substr(0, last_slash));
+    std::string file_name(str_path.substr(last_slash + 1) + ".bridge_temp_file");
     LOG("[truncate]: Parent folder is: %s\n", parent_path.c_str());
     LOG("[truncate]: Temp file name is: %s\n", file_name.c_str());
     std::string parent_id = get_path_remote_id(parent_path, auth_header);
@@ -369,11 +371,13 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
     }
 
     // Parse new path
-    std::string target_folder(str_new_path.substr(0, str_new_path.find_last_of('/')));
-    std::string new_name(str_new_path.substr(str_new_path.find_last_of('/') + 1));
+    int new_last_slash = str_new_path.find_last_of('/');
+    std::string target_folder(str_new_path.substr(0, new_last_slash));
+    std::string new_name(str_new_path.substr(new_last_slash + 1));
     // Parse old path
-    std::string old_folder(str_old_path.substr(0, str_old_path.find_last_of('/')));
-    std::string old_name(str_old_path.substr(str_old_path.find_last_of('/') + 1));
+    int old_last_slash = str_old_path.find_last_of('/');
+    std::string old_folder(str_old_path.substr(0, old_last_slash));
+    std::string old_name(str_old_path.substr(old_last_slash + 1));
 
     if (target_folder != old_folder) {
         // We have to move the entry to a new folder
@@ -453,8 +457,9 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     // tempfile required because remote can't write to a file after it's closed
     LOG("[open]: File wasn't in read only or truncate mode, preloading to remote temp file...\n");
     std::string str_path(file_path);
-    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
-    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1) + ".bridge_temp_file");
+    int last_slash = str_path.find_last_of('/');
+    std::string parent_path(str_path.substr(0, last_slash));
+    std::string file_name(str_path.substr(last_slash + 1) + ".bridge_temp_file");
     LOG("[open]: Parent folder is: %s\n", parent_path.c_str());
     LOG("[open]: Temp file name is: %s\n", file_name.c_str());
     std::string parent_id = get_path_remote_id(parent_path, auth_header);
@@ -527,8 +532,9 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
 int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
     LOG("[create]: Creating file %s\n", file_path);
     std::string str_path(file_path);
-    std::string parent_path(str_path.substr(0, str_path.find_last_of('/')));
-    std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
+    int last_slash = str_path.find_last_of('/');
+    std::string parent_path(str_path.substr(0, last_slash));
+    std::string file_name(str_path.substr(last_slash + 1));
     LOG("[create]: Parent folder is: %s\n", parent_path.c_str());
     LOG("[create]: File name is: %s\n", file_name.c_str());
     std::string parent_id = get_path_remote_id(parent_path, auth_header);
@@ -672,12 +678,12 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
 
         LOG("[readdir.cache_remote_id] Listing remote id cache:\n");
-        for (auto item : remote_id_map) {
-            LOG("%s => %s\n", item.first.c_str(), item.second.id.c_str());
+        for (auto& [curpath, entry] : remote_id_map) {
+            LOG("%s => %s\n", curpath.c_str(), entry.id.c_str());
         }
 
         // Prefetch subfolder counts
-        subfolder_id_param = subfolder_id_param.substr(0, subfolder_id_param.size() - 1);
+        if (!subfolder_id_param.empty()) subfolder_id_param.pop_back(); // Remove trailing "," from the parameter
         std::vector<entry_data> subfolders;
         request_result res = list_entries_multiple(subfolder_id_param, auth_header, subfolders);
         if (res == REQUEST_SUCCESS) {
@@ -694,14 +700,14 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
 
         LOG("[readdir.subfolder_count_prefetch] Listing subfolder count cache:\n");
-        for (const auto& item : subfolder_count_cache) {
-            LOG("%s => %d\n", item.first.c_str(), item.second.subfolder_count);
+        for (const auto& [id, entry] : subfolder_count_cache) {
+            LOG("%s => %d\n", id.c_str(), entry.subfolder_count);
         }
 
         // Print the prefetched file sizes
         LOG("[readdir.filesize_count_prefetch] Listing file size cache:\n");
-        for (auto item : filesize_cache) {
-            LOG("%s => %d\n", item.first.c_str(), item.second.filesize);
+        for (const auto& [id, entry]: filesize_cache) {
+            LOG("%s => %d\n", id.c_str(), entry.filesize);
         }
         return 0;
     } else if (expand_result == 0) {  // has entry but it's a file

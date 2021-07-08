@@ -355,7 +355,7 @@ request_result list_entries(const std::string& path, const std::string &auth_tok
             bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
             int size = 0;
             if (folder_contents[i]["size"] != nullptr) size = folder_contents[i]["size"];
-            entry_data entry(size, is_dir, id, name);
+            entry_data entry(size, is_dir, std::move(id), std::move(name));
             entries[i] = entry;
         }
         return REQUEST_SUCCESS;
@@ -393,7 +393,7 @@ request_result list_entries_multiple(const std::string& ids, const std::string &
             std::string name = folder_contents[i]["name"];
             bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
             std::string parent_id = folder_contents[i]["parentID"];
-            entry_data entry(is_dir, id, name, parent_id);
+            entry_data entry(is_dir, std::move(id), std::move(name), std::move(parent_id));
             entries[i] = entry;
         }
         return REQUEST_SUCCESS;
