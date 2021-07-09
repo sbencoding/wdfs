@@ -38,9 +38,9 @@ int main (int argc, char *argv[]) {
     std::string authorization_header;
 
     // Initialize the network bridge
-    if (!init_bridge()) {
+    if (!bridge::init_bridge()) {
         fprintf(stderr, "Network bridge initialization failed... shutting down\n");
-        release_bridge();
+        bridge::release_bridge();
         return 1;
     }
 
@@ -48,23 +48,23 @@ int main (int argc, char *argv[]) {
     std::string access_token;
     std::string_view user(conf.username);
     std::string_view pass(conf.password);
-    bool login_result = login(user, pass, authorization_header, &access_token);
+    bool login_result = bridge::login(user, pass, authorization_header, &access_token);
 
     free(conf.username);
     free(conf.password);
 
     if (!login_result) {
         fprintf(stderr, "Login failed... shutting down\n");
-        release_bridge();
+        bridge::release_bridge();
         return 1;
     }
 
     // Select device endpoint to use
     std::string_view device_id(conf.host);
-    bool endpoint_result = detect_endpoint(authorization_header, device_id);
+    bool endpoint_result = bridge::detect_endpoint(authorization_header, device_id);
     if (!endpoint_result) {
         fprintf(stderr, "Failed to detect the endpoint... shutting down\n");
-        release_bridge();
+        bridge::release_bridge();
         return 1;
     }
 
@@ -72,7 +72,7 @@ int main (int argc, char *argv[]) {
     fs.set_authorization_header(authorization_header);
 
     int result = fs.run(args.argc, args.argv);
-    release_bridge();
+    bridge::release_bridge();
     free(conf.host);
     return result;
 }

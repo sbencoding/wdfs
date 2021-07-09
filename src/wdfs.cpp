@@ -51,7 +51,7 @@ std::unordered_map<std::string, std::string> temp_file_binding;
 // Maps a local path to a newly created remote file's ID
 std::unordered_map<std::string, std::string> create_opened_files;
 // Used for caching entries of a specific parent entry
-std::unordered_map<std::string, std::vector<entry_data>> list_entries_cache;
+std::unordered_map<std::string, std::vector<bridge::entry_data>> list_entries_cache;
 // Used for caching remote file sizes
 std::unordered_map<std::string, filesize_cache_value> filesize_cache;
 
@@ -91,34 +91,33 @@ std::vector<std::string> split_string(const std::string &input, const char delim
 
 // List the entries of a full path
 // Returns: 1 => folder found; 0 => folder not found, entry exists; -1 => entry doesn't exist
-int list_entries_expand(const std::string &path, std::vector<entry_data> *result, const std::string &auth_header) {
+list_entries_result list_entries_expand(const std::string &path, std::vector<bridge::entry_data> *result, const std::string &auth_header) {
     // Checks if the ID of the local path is cached
-    // TODO: enum of global constant for return value
     if (remote_id_map.find(path) != remote_id_map.end()) {
         LOG("[list_entries_expand]: Corresponding ID for %s was found in the cache\n", path.c_str());
         LOG("[list_entries_expand]: Path's ID is: %s (%d)\n", remote_id_map[path].id.c_str(), remote_id_map[path].is_dir);
-        if (!remote_id_map[path].is_dir) return 0;
+        if (!remote_id_map[path].is_dir) return FILE_FOUND;
         if (result != NULL) {
             std::string entry_id = remote_id_map[path].id;
-            std::vector<entry_data> cache_results;
-            request_result res = list_entries(entry_id, auth_header, cache_results);
+            std::vector<bridge::entry_data> cache_results;
+            bridge::request_result res = bridge::list_entries(entry_id, auth_header, cache_results);
             LOG("[list_entries_expand]: Cached entry had %d entries\n", cache_results.size());
-            if (res == REQUEST_SUCCESS) {
+            if (res == bridge::REQUEST_SUCCESS) {
                 LOG("[list_entries_expand]: list_entries_cache invalidated\n");
                 *result = cache_results;
                 list_entries_cache[entry_id] = cache_results;
-            } else if (res == REQUEST_CACHED) {
+            } else if (res == bridge::REQUEST_CACHED) {
                 LOG("[list_entries_expand]: list_entries_cache is valid\n");
                 *result = list_entries_cache[entry_id];
             }
         }
-        return 1;
+        return FOLDER_FOUND;
     }
 
     // Enumerates the IDs of parent folders
     std::vector<std::string> parts = split_string(path, '/');
     std::string current_id;
-    std::vector<entry_data> current_items;
+    std::vector<bridge::entry_data> current_items;
     std::string current_full_path;
 
     // Expand the folders starting from root to the requested path
@@ -132,7 +131,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
             bool entry_found = false;
             // find the name of the next folder in the path parts
             for (auto item = current_items.begin(); item != current_items.end(); ++item) {
-                entry_data current_entry = *item;
+                bridge::entry_data current_entry = *item;
 
                 if (current_entry.name == current) { // name of the entry matches the name of the next folder
                     entry_found = true;
@@ -141,22 +140,22 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
                     remote_id_map[current_full_path] = id_cache_value(current_entry.id, current_entry.is_dir);
                     if (current_entry.is_dir) { // The entry is a folder indeed
                         folder_found = true;
-                        if (result == NULL && it + 1 == parts.end()) return 1;
+                        if (result == NULL && it + 1 == parts.end()) return FOLDER_FOUND;
                     }
                     break;
                 }
             }
-            if (!folder_found && !entry_found) return -1; // The entry doesn't exist on the server
-            else if (!folder_found) return 0; // The entry exists but it's a file
+            if (!folder_found && !entry_found) return NOT_FOUND; // The entry doesn't exist on the server
+            else if (!folder_found) return FILE_FOUND; // The entry exists but it's a file
         }
 
         current_items.clear();
         // List entries for the current path part
-        request_result res = list_entries(current_id, auth_header, current_items);
-        if (res == REQUEST_CACHED) {
+        bridge::request_result res = bridge::list_entries(current_id, auth_header, current_items);
+        if (res == bridge::REQUEST_CACHED) {
             current_items = list_entries_cache[current_id];
             LOG("[list_entries_expand]: expanding -> results taken from cache\n");
-        } else if (res == REQUEST_SUCCESS) {
+        } else if (res == bridge::REQUEST_SUCCESS) {
             list_entries_cache[current_id] = current_items;
             LOG("[list_entries_expand]: expanding -> results taken from server -> results cached\n");
         }
@@ -166,7 +165,7 @@ int list_entries_expand(const std::string &path, std::vector<entry_data> *result
         *result = current_items;
     }
 
-    return 1;
+    return FOLDER_FOUND;
 }
 
 // Get the ID of the remote entry corresponding to the local path given
@@ -183,9 +182,9 @@ std::string get_path_remote_id(const std::string &path, const std::string &auth_
     }
     LOG("[get_remote_id]: Path isn't cached, fetching id from server\n");
     // list_entries_expand automatically populates the cache if the entry exists
-    int expand_result = list_entries_expand(path, NULL, auth_header);
+    list_entries_result expand_result = list_entries_expand(path, NULL, auth_header);
     LOG("[get_remote_id]: expand result: %d\n", expand_result);
-    if (expand_result == 1 || expand_result == 0) { // Entry exists on server
+    if (expand_result != NOT_FOUND) { // Entry exists on server
         return get_path_remote_id(path, auth_header); // Will read from cache
     }
 
@@ -195,7 +194,6 @@ std::string get_path_remote_id(const std::string &path, const std::string &auth_
 // Get the number of sub folders of a folder on the remote system
 int get_subfolder_count(const std::string &path, const std::string &auth_header) {
     LOG("[get_subfolder_count]: Requesting subfolder count for %s\n", path.c_str());
-    // TODO: return enum or global constant
     std::string remote_id = get_path_remote_id(path, auth_header);
     if (remote_id.empty()) return -2; // Server doesn't have this entry
     if (create_opened_files.find(path) != create_opened_files.end() || (remote_id != "root" && !remote_id_map[path].is_dir)) return -1; // Entry is not a directory
@@ -208,11 +206,11 @@ int get_subfolder_count(const std::string &path, const std::string &auth_header)
             return v.subfolder_count;
         }
     }
-    std::vector<entry_data> entries;
+    std::vector<bridge::entry_data> entries;
     bool cache_invalidated = false;
-    request_result res = list_entries(remote_id, auth_header, entries);
-    if (res == REQUEST_FAILED) return -2;
-    else if (res == REQUEST_SUCCESS) {
+    bridge::request_result res = bridge::list_entries(remote_id, auth_header, entries);
+    if (res == bridge::REQUEST_FAILED) return -2;
+    else if (res == bridge::REQUEST_SUCCESS) {
         // current cache invalid
         LOG("[get_subfolder_count]: server returned entries result\n");
         list_entries_cache[remote_id] = entries;
@@ -256,11 +254,11 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
         }
     }
     // Cache might not be valid
-    request_result res = get_file_size(file_id, result, auth_header);
-    if (res == REQUEST_SUCCESS) {
+    bridge::request_result res = bridge::get_file_size(file_id, result, auth_header);
+    if (res == bridge::REQUEST_SUCCESS) {
         // Server sent new file size, invalidated the cache
         filesize_cache[file_id].filesize = result;
-    } else if (res == REQUEST_FAILED) return -1;
+    } else if (res == bridge::REQUEST_FAILED) return -1;
 
     // Cache is 100% valid at this point
     return filesize_cache[file_id].filesize;
@@ -281,15 +279,15 @@ int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
     std::string remote_id = get_path_remote_id(str_path, auth_header);
     int remote_file_size = -1;
     // Get size of the remote file
-    request_result res = get_file_size(remote_id, remote_file_size, auth_header);
-    if (res == REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
-    else if (res == REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
+    bridge::request_result res = bridge::get_file_size(remote_id, remote_file_size, auth_header);
+    if (res == bridge::REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
+    else if (res == bridge::REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
     if (remote_file_size <= (int) offset) return 0; // Nothing to truncate here
     if (remote_file_size != -1) {
         LOG("[truncate]: Remote file exists and has %d bytes\n", remote_file_size);
         // Create temp file on remote
         std::string temp_file_id;
-        bool temp_open_res = file_write_open(parent_id, file_name, auth_header, temp_file_id);
+        bool temp_open_res = bridge::file_write_open(parent_id, file_name, auth_header, temp_file_id);
         if (!temp_open_res) return -1;
         // Read the remote file part in chunks
         int bytes_read = 0;
@@ -301,12 +299,12 @@ int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
             int local_read = 0;
             // Calculate the number of bytes to read, not to go beyond the specified offset
             int to_read = std::min(CHUNK_SIZE, (int)offset - bytes_read);
-            bool success = read_file(remote_id, buffer, bytes_read, to_read, local_read, auth_header);
+            bool success = bridge::read_file(remote_id, buffer, bytes_read, to_read, local_read, auth_header);
             LOG("[truncate]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, offset);
             if (!success) return -1;
             bytes_read += local_read;
             // Write file to remote temp file
-            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
+            bool write_result = bridge::write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
             if (!write_result) return -1;
         }
         free(buffer);
@@ -332,7 +330,7 @@ int WdFs::utimens(const char* path, const struct timespec tv[2], struct fuse_fil
         LOG("[utimens]: Failed to get the ID of the remote file\n");
         return -1;
     }
-    bool success = set_modification_time(remote_id, tv[1].tv_sec, auth_header);
+    bool success = bridge::set_modification_time(remote_id, tv[1].tv_sec, auth_header);
     if (!success) {
         LOG("[utimens]: Failed to set modification time\n");
         return -1;
@@ -363,7 +361,7 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
     }
     if (!new_id.empty()) {
         LOG("[rename]: Removing existing file %s, it's going to be replaced\n", new_location);
-        bool success = remove_entry(new_id, auth_header);
+        bool success = bridge::remove_entry(new_id, auth_header);
         if (!success) {
             LOG("[rename]: Failed to remove already existing file!\n");
             return -1; // No specific error code for bridge failure
@@ -382,7 +380,7 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
     if (target_folder != old_folder) {
         // We have to move the entry to a new folder
         std::string target_folder_id = get_path_remote_id(target_folder, auth_header);
-        bool success = move_entry(old_id, target_folder_id, auth_header);
+        bool success = bridge::move_entry(old_id, target_folder_id, auth_header);
         if (!success) {
             LOG("[rename]: Move entry to new folder failed!\n");
             return -1; // No specific error code for bridge failure
@@ -391,7 +389,7 @@ int WdFs::rename(const char* old_location, const char* new_location, unsigned in
 
     if (new_name != old_name) {
         // We have to rename the entry
-        bool success = rename_entry(old_id, new_name, auth_header);
+        bool success = bridge::rename_entry(old_id, new_name, auth_header);
         if (!success) {
             LOG("[rename]: Entry rename failed!\n");
             return -1; // No specific error code for bridge failure
@@ -416,13 +414,13 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         // File to be released is an open temp file, close the write (upload) call here
         std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
         std::string remote_temp_id = temp_file_binding[str_path];
-        bool close_result = file_write_close(remote_temp_id, auth_header);
+        bool close_result = bridge::file_write_close(remote_temp_id, auth_header);
         if (!close_result) LOG("[release]: Remote temp file close failed\n");
         else LOG("[release]: Remote temp file closed\n");
         temp_file_binding.erase(str_path);
         // Remove the original file
         std::string original_id = get_path_remote_id(str_path, auth_header);
-        bool remove_result = remove_entry(original_id, auth_header);
+        bool remove_result = bridge::remove_entry(original_id, auth_header);
         if (!remove_result) {
             LOG("[release]: Failed to remove old file!\n");
             return -1;
@@ -430,7 +428,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         // Update the ID-local cache with the new ID of the old file
         remote_id_map[str_path] = id_cache_value(remote_temp_id, false);
         // Rename the new file
-        bool rename_result = rename_entry(remote_temp_id, file_name, auth_header);
+        bool rename_result = bridge::rename_entry(remote_temp_id, file_name, auth_header);
         if (!rename_result) {
             LOG("[release]: Failed to rename new file to old name!\n");
             return -1;
@@ -438,7 +436,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
     } else if (create_opened_files.find(str_path) != create_opened_files.end()) {
         // File is has been created, but hasn't been closed yet
         std::string new_file_id = create_opened_files[str_path];
-        bool close_result = file_write_close(new_file_id, auth_header);
+        bool close_result = bridge::file_write_close(new_file_id, auth_header);
         create_opened_files.erase(str_path);
         if (!close_result) {
             LOG("[release]: Failed to close created file!\n");
@@ -468,14 +466,14 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     std::string remote_id = get_path_remote_id(str_path, auth_header);
     int remote_file_size = -1;
     // Get size of the remote file
-    request_result res = get_file_size(remote_id, remote_file_size, auth_header);
-    if (res == REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
-    else if (res == REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
+    bridge::request_result res = bridge::get_file_size(remote_id, remote_file_size, auth_header);
+    if (res == bridge::REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
+    else if (res == bridge::REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
     if (remote_file_size != -1) {
         LOG("[open]: Remote file exists and has %d bytes\n", remote_file_size);
         // Create temp file on remote
         std::string temp_file_id;
-        bool temp_open_res = file_write_open(parent_id, file_name, auth_header, temp_file_id);
+        bool temp_open_res = bridge::file_write_open(parent_id, file_name, auth_header, temp_file_id);
         if (!temp_open_res) return -1;
         // Read the remote file in chunks
         int bytes_read = 0;
@@ -485,12 +483,12 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
         std::string location_hdr("sdk/v2/files/" + temp_file_id);
         while (bytes_read != remote_file_size) {
             int local_read = 0;
-            bool success = read_file(remote_id, buffer, bytes_read, CHUNK_SIZE, local_read, auth_header);
+            bool success = bridge::read_file(remote_id, buffer, bytes_read, CHUNK_SIZE, local_read, auth_header);
             LOG("[open]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, remote_file_size);
             if (!success) return -1;
             bytes_read += local_read;
             // Write file to remote temp file
-            bool write_result = write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
+            bool write_result = bridge::write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
             if (!write_result) return -1;
         }
         free(buffer);
@@ -522,7 +520,7 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
     // write the given bytes to the remote file
     LOG("[write]: Write target file found with ID: %s\n", file_id.c_str());
     std::string location_hdr("sdk/v2/files/" + file_id);
-    bool result = write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
+    bool result = bridge::write_file(auth_header, location_hdr, (int)offset, (int)size, buffer);
     if (!result) return -1;
     LOG("[write]: %d bytes written to %s\n", (int)size, file_path);
     return (int)size;
@@ -541,7 +539,7 @@ int WdFs::create(const char* file_path, mode_t mode, struct fuse_file_info *) {
     LOG("[create]: Parent folder ID is: %s\n", parent_id.c_str());
 
     std::string new_id;
-    bool open_result = file_write_open(parent_id, file_name, auth_header, new_id);
+    bool open_result = bridge::file_write_open(parent_id, file_name, auth_header, new_id);
     if (!open_result) return -1;
     // Cache new file ID with the create map
     create_opened_files[str_path] = new_id;
@@ -557,7 +555,7 @@ int WdFs::rmdir(const char* dir_path) {
     // Get ID of the remote directory
     std::string remote_entry_id = get_path_remote_id(str_path, auth_header);
     printf("[rmdir]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool success = remove_entry(remote_entry_id, auth_header);
+    bool success = bridge::remove_entry(remote_entry_id, auth_header);
     if (success) {
         LOG("[rmdir]: Directory remove successful\n");
         // Remove folder from the ID cache
@@ -576,7 +574,7 @@ int WdFs::unlink(const char* file_path) {
     // Get the ID of the remote file
     std::string remote_entry_id = get_path_remote_id(str_path, auth_header);
     printf("[unlink]: ID for remote entry is: %s\n", remote_entry_id.c_str());
-    bool success = remove_entry(remote_entry_id, auth_header);
+    bool success = bridge::remove_entry(remote_entry_id, auth_header);
     if (success) {
         LOG("[unlink]: File remove successful\n");
         // Remove file from the ID cache
@@ -599,7 +597,7 @@ int WdFs::mkdir(const char* path, mode_t mode) {
     LOG("[mkdir]: Path prefix is %s\n", path_prefix.c_str());
     std::string prefix_id = get_path_remote_id(path_prefix, auth_header);
     LOG("[mkdir]: ID for path prefix is %s\n", prefix_id.c_str());
-    std::string new_id = make_dir(folder_name, prefix_id, auth_header);
+    std::string new_id = bridge::make_dir(folder_name, prefix_id, auth_header);
     remote_id_map[str_path] = id_cache_value(new_id, true);
     subfolder_count_cache[new_id] = subfolder_cache_value(0, 0);
     LOG("[mkdir]: Finished with new folder ID: %s\n", new_id.c_str());
@@ -652,16 +650,16 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
     filler(buffer, ".", NULL, 0, FUSE_FILL_DIR_PLUS);
     filler(buffer, "..", NULL, 0, FUSE_FILL_DIR_PLUS);
     // Get entry list of the remote directory
-    std::vector<entry_data> entries;
+    std::vector<bridge::entry_data> entries;
     std::string str_path(path);
     std::string subfolder_id_param;
     std::vector<std::string> subfolder_ids;
-    int expand_result = list_entries_expand(str_path, &entries, auth_header);
-    if (expand_result == 1) { // has entry and it's a directory
+    list_entries_result expand_result = list_entries_expand(str_path, &entries, auth_header);
+    if (expand_result == FOLDER_FOUND) { // has entry and it's a directory
         LOG("[readdir] Given path is a folder\n");
         for (int i = 0; i < entries.size(); i++) {
             // Insert entries to ID cache
-            entry_data current = entries[i];
+            bridge::entry_data current = entries[i];
             std::string cache_key(str_path + (str_path == "/" ? "" : "/") + current.name);
             remote_id_map[cache_key] = id_cache_value(current.id, current.is_dir);
             // Send the entry's name to the system
@@ -684,14 +682,14 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
 
         // Prefetch subfolder counts
         if (!subfolder_id_param.empty()) subfolder_id_param.pop_back(); // Remove trailing "," from the parameter
-        std::vector<entry_data> subfolders;
-        request_result res = list_entries_multiple(subfolder_id_param, auth_header, subfolders);
-        if (res == REQUEST_SUCCESS) {
+        std::vector<bridge::entry_data> subfolders;
+        bridge::request_result res = bridge::list_entries_multiple(subfolder_id_param, auth_header, subfolders);
+        if (res == bridge::REQUEST_SUCCESS) {
             LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
             for (const auto& entry : subfolders) {
                 subfolder_count_cache[entry.parent_id].subfolder_count += entry.is_dir;
             }
-        } else if (res == REQUEST_CACHED) {
+        } else if (res == bridge::REQUEST_CACHED) {
             // Fill subfolder_count from previously cached values
             LOG("[readdir.subfolder_count_prefetch]: Server sent cache is valid\n");
             for (const std::string& id : subfolder_ids) {
@@ -710,7 +708,7 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
             LOG("%s => %d\n", id.c_str(), entry.filesize);
         }
         return 0;
-    } else if (expand_result == 0) {  // has entry but it's a file
+    } else if (expand_result == FILE_FOUND) {  // has entry but it's a file
         //return 0;
         return -ENOTDIR;
     } else { // remote doesn't have the entry
@@ -727,7 +725,7 @@ int WdFs::read(const char *path, char *buffer, size_t size, off_t offset, struct
     if (file_id.empty()) return -1;
 
     int bytes_read = 0;
-    bool success = read_file(file_id, buffer, (int)offset, (int)size, bytes_read, auth_header);
+    bool success = bridge::read_file(file_id, buffer, (int)offset, (int)size, bytes_read, auth_header);
     LOG("[read]: Actual bytes read from file: %d\n", bytes_read);
     return (!success * -1) + (success * bytes_read);
     //if (!success) return -1;

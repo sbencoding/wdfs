@@ -5,6 +5,11 @@
 #include "../include/Fuse-impl.h"
 #include <string>
 
+enum list_entries_result {
+    FOLDER_FOUND,
+    FILE_FOUND,
+    NOT_FOUND
+};
 class WdFs : public Fusepp::Fuse<WdFs> {
     private:
         static std::string auth_header;

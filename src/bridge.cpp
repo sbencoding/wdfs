@@ -69,48 +69,6 @@ void curl_share_unlock(CURL *handle, curl_lock_data data, void *userptr) {
 }
 
 
-// Initialize the network bridge
-bool init_bridge() {
-    // Init the global CURL environment
-    curl_global_init(CURL_GLOBAL_ALL);
-
-    // Init mutex lock array
-    for (int i = 0; i < 5; ++i) {
-        pthread_mutex_init(&mutex_list[i], NULL);
-    }
-
-    // Init CURL handle
-    share = curl_share_init();
-    if (!share) {
-        return false;
-    }
-    // Setup shared data
-    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
-    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
-    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
-    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_PSL);
-    curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
-    // Setup locking functions
-    curl_share_setopt(share, CURLSHOPT_LOCKFUNC, curl_share_lock);
-    curl_share_setopt(share, CURLSHOPT_UNLOCKFUNC, curl_share_unlock);
-
-    return true;
-}
-
-// Release the network bridge
-void release_bridge() {
-    // Release shared CURL session
-    curl_share_cleanup(share);
-
-    // Shutdown CURL global environment
-    curl_global_cleanup();
-
-    // Release mutex lock array
-    for (int i = 0; i < 5; ++i) {
-        pthread_mutex_destroy(&mutex_list[i]);
-    }
-}
-
 // Convert the given timestamp to the required format by the server
 std::string to_iso_time(const time_t &t) {
     // Note: time_t is passed by fuse
@@ -293,418 +251,6 @@ bool generic_handler(int status_code, std::string &response_body) {
     return false;
 }
 
-// Login to the remote device
-bool login(std::string_view username, std::string_view password, std::string &session_id, std::string *access_token) {
-    const std::string auth_url = "https://prod.wdckeystone.com/authrouter/oauth/ro";
-    const std::string_view wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
-    json req = {
-        {"client_id", wdcAuth0ClientID},
-        {"connection", "Username-Password-Authentication"},
-        {"device", "123456789"},
-        {"grant_type", "password"},
-        {"password", password},
-        {"username", username},
-        {"scope", "openid offline_access"},
-    };
-
-    std::string rbody = req.dump();
-    std::vector<std::string> hdrs {
-        "Content-Type: application/json"
-    };
-    response_data resp = make_request("POST", auth_url,  hdrs, rbody.c_str(), (long)rbody.size());
-    if (generic_handler(resp.status_code, resp.response_body)) { 
-        auto json_response = json::parse(resp.response_body);
-        std::string id_token = json_response["id_token"];
-        session_id.assign("Authorization: Bearer " + id_token);
-        if (access_token != NULL) {
-            std::string acc_token = json_response["access_token"];
-            access_token->assign("Authorization: Bearer " + acc_token);
-        }
-        return true;
-    }
-    return false;
-}
-
-// List entries on the remote device
-request_result list_entries(const std::string& path, const std::string &auth_token, std::vector<entry_data> &entries) {
-    const std::string request_url = fmt::format("{}sdk/v2/filesSearch/parents?ids={}&fields=id,mimeType,name,size&pretty=false&orderBy=name&order=asc;", request_start, path);
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    if (etag_mapping.find(request_url) != etag_mapping.end()) {
-        // We have a previous ETag, add if-none-match to the headers
-        headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
-    }
-
-    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (rd.status_code == 304) {
-        // Entries haven't changed since last run
-        return REQUEST_CACHED;
-    } else if (generic_handler(rd.status_code, rd.response_body)) {
-        // Update ETag mapping
-        if (rd.headers.find("etag") != rd.headers.end()) {
-            etag_mapping[request_url] = rd.headers["etag"];
-        }
-        auto json_response = json::parse(rd.response_body);
-        auto folder_contents = json_response["files"];
-        entries.resize(folder_contents.size());
-        for (int i = 0; i < folder_contents.size(); i++) {
-            std::string id = folder_contents[i]["id"];
-            std::string name = folder_contents[i]["name"];
-            bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
-            int size = 0;
-            if (folder_contents[i]["size"] != nullptr) size = folder_contents[i]["size"];
-            entry_data entry(size, is_dir, std::move(id), std::move(name));
-            entries[i] = entry;
-        }
-        return REQUEST_SUCCESS;
-    }
-    return REQUEST_FAILED;
-}
-
-// List entries on the remote system for multiple entries
-request_result list_entries_multiple(const std::string& ids, const std::string &auth_token, std::vector<entry_data> &entries) {
-    const std::string request_url = fmt::format("{}sdk/v2/filesSearch/parents?ids={}&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", request_start, ids);
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    if (etag_mapping.find(request_url) != etag_mapping.end()) {
-        // We have a previous ETag, add if-none-match to the headers
-        headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
-    }
-
-    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (rd.status_code == 304) {
-        return REQUEST_CACHED;
-    } else if (generic_handler(rd.status_code, rd.response_body)) {
-        // Update ETag mapping
-        if (rd.headers.find("etag") != rd.headers.end()) {
-            etag_mapping[request_url] = rd.headers["etag"];
-        }
-
-        auto json_response = json::parse(rd.response_body);
-        auto folder_contents = json_response["files"];
-        entries.resize(folder_contents.size());
-        for (int i = 0; i < folder_contents.size(); i++) {
-            std::string id = folder_contents[i]["id"];
-            std::string name = folder_contents[i]["name"];
-            bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
-            std::string parent_id = folder_contents[i]["parentID"];
-            entry_data entry(is_dir, std::move(id), std::move(name), std::move(parent_id));
-            entries[i] = entry;
-        }
-        return REQUEST_SUCCESS;
-    }
-    return REQUEST_FAILED;
-}
-
-// Create a new folder on the remote system
-std::string make_dir(const std::string& folder_name, const std::string& parent_folder_id, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files?resolveNameConflict=true", request_start);
-
-    std::vector<std::string> headers {
-        auth_token,
-        "Content-Type: multipart/related; boundary=287032381131322"
-    };
-
-    json req = {
-        {"name", folder_name},
-        {"parentID", parent_folder_id},
-        {"mimeType", "application/x.wd.dir"},
-    };
-
-    const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
-    response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("mkdir request finished with status code 201\n");
-        if (rd.headers.find("location") != rd.headers.end()) {
-            std::string location_header = rd.headers["location"];
-            int lastPathPart = location_header.find_last_of('/');
-            printf("mkdir Found location header\n");
-            return location_header.substr(lastPathPart + 1, location_header.size() - lastPathPart - 1);
-        }
-    }
-    return std::string("");
-}
-
-// Remove an entry from the remote system
-bool remove_entry(const std::string &entry_id, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}", request_start, entry_id);
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    response_data rd = make_request("DELETE", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("rm request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Read the contents of a file on the remote system
-bool read_file(const std::string &file_id, void *buffer, int offset, int size, int &bytes_read, const std::string &auth_token) {
-    CURLcode res;
-    response_data rd;
-    struct curl_slist *chunk = NULL;
-
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}/content?download=true", request_start, file_id);
-    const std::string range_header = fmt::format("Range: bytes={}-{}", offset, offset + size - 1);
-
-    std::vector<std::string> headers {
-        auth_token,
-        range_header
-    };
-
-    CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
-    if (curl) {
-        buffer_result current_result(0, (char*)buffer);
-        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
-        curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
-        res = curl_easy_perform(curl);
-        request_free(curl, chunk, res);
-        if (rd.status_code == 416) {
-            // Requested range is wrong
-            bytes_read = 0;
-            printf("read request was for an empty file\n");
-            return true;
-        } else if (generic_handler(rd.status_code, rd.response_body)) {
-            bytes_read = current_result.bytes_read;
-            printf("read request finished with status code 206\n");
-            return true;
-        }
-    }
-    return false;
-}
-
-// Get the size of a file on the remote system
-request_result get_file_size(const std::string &file_id, int &file_size, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}?pretty=false&fields=size", request_start, file_id);
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    if (etag_mapping.find(request_url) != etag_mapping.end()) {
-        // We have a previous ETag, add if-none-match to the headers
-        headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
-    }
-
-    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (rd.status_code == 304) {
-        return REQUEST_CACHED;
-    } else if (generic_handler(rd.status_code, rd.response_body)) {
-        // Update ETag mapping
-        if (rd.headers.find("etag") != rd.headers.end()) {
-            etag_mapping[request_url] = rd.headers["etag"];
-        }
-        printf("get_size request finished with status code 200\n");
-        auto json_response = json::parse(rd.response_body);
-        int size = json_response["size"];
-        file_size = size;
-        return REQUEST_SUCCESS;
-    }
-
-    return REQUEST_FAILED;
-}
-
-// Close an open file on the remote system
-bool file_write_close(const std::string &new_file_id, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}/resumable/content?done=true", request_start, new_file_id);
-    printf("file_write_close request URL is: %s\n", request_url.c_str());
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    response_data rd = make_request("PUT", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("file_write_close request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Open a file on the remote system
-bool file_write_open(const std::string &parent_id, const std::string &file_name, const std::string &auth_token, std::string &new_file_id) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/resumable?resolveNameConflict=0&done=false", request_start);
-
-    std::vector<std::string> headers {
-        auth_token,
-        "Content-Type: multipart/related; boundary=287032381131322"
-    };
-
-    // Write request body
-    std::string current_time = get_formatted_time();
-    json req = {
-        {"name", file_name},
-        {"parentID", parent_id},
-        {"mTime", current_time},
-    };
-
-    const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
-
-    response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        if (rd.headers.find("location") != rd.headers.end()) { 
-            std::string location_header = rd.headers["location"];
-            int last_path_part_idx = location_header.find_last_of('/');
-            printf("file_write_open found location header\n");
-            new_file_id = location_header.substr(last_path_part_idx + 1, location_header.size() - last_path_part_idx - 1);
-        }
-        return true;
-    }
-
-    return false;
-}
-
-// Write bytes to a file on the remote system
-bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer) {
-    const std::string request_url = fmt::format("{}{}/resumable/content?offset={}&done=false", request_start, file_location, offset);
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    response_data rd = make_request("PUT", request_url, headers, buffer, (long) size);
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("write_file request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Rename a file on the remote system
-bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
-
-    std::vector<std::string> headers {
-        auth_token,
-        "Content-Type: text/plain;charset=UTF-8"
-    };
-
-    // Write request body
-    std::string current_time = get_formatted_time();
-    json req = {
-        {"name", new_name},
-        {"mTime", current_time}
-    };
-
-    std::string rbody = req.dump();
-
-    response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("rename_entry request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Set the modification time of a file
-bool set_modification_time(const std::string &entry_id, const time_t &new_time, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
-
-    std::vector<std::string> headers {
-        auth_token,
-        "Content-Type: text/plain;charset=UTF-8"
-    };
-
-    // Write request body
-    std::string time_to_set = to_iso_time(new_time);
-    json req = {
-        {"mTime", time_to_set}
-    };
-
-    std::string rbody = req.dump();
-
-    response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("set_modification_time request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Move an entry on the remote system
-bool move_entry(const std::string &entry_id, const std::string &new_parent_id, const std::string &auth_token) {
-    const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
-
-    std::vector<std::string> headers {
-        auth_token,
-        "Content-Type: text/plain;charset=UTF-8"
-    };
-
-    // Write request body
-    std::string current_time = get_formatted_time();
-    json req = {
-        {"parentID", new_parent_id},
-    };
-
-    std::string rbody = req.dump();
-
-    response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        printf("move_entry request finished with status code 204\n");
-        return true;
-    }
-
-    return false;
-}
-
-// Get the auth0 userid of the user
-bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
-    const std::string request_url = "https://wdc.auth0.com/userinfo";
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        auto json_response = json::parse(rd.response_body);
-        std::string id_token = json_response["sub"];
-        user_id = id_token;
-        return true;
-    }
-    return false;
-}
-
-// Get user devices with their names and their IDs
-bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list) {
-    // https://device.mycloud.com/device/v1/user/{auth0_user_id} (legacy URL see new URL below)
-    // https://prod.wdckeystone.com/device/v1/user/{auth0_user_id}
-
-    std::string escaped_user_id = encode_url_part(user_id.c_str());
-    const std::string request_url = fmt::format("https://prod.wdckeystone.com/device/v1/user/{}", escaped_user_id);
-
-    std::vector<std::string> headers {
-        auth_token
-    };
-
-    response_data rd = make_request("GET", request_url, headers, NULL, 0L);
-    if (generic_handler(rd.status_code, rd.response_body)) {
-        auto json_response = json::parse(rd.response_body);
-        auto data_obj = json_response["data"];
-        device_list.resize(data_obj.size());
-        for (int i = 0; i < data_obj.size(); i++) {
-            std::string device_id = data_obj[i]["deviceId"];
-            std::string device_name = data_obj[i]["name"];
-            device_list[i] = std::move(make_pair(device_id, device_name));
-        }
-        return true;
-    }
-    return false;
-}
-
-
 // Get user devices with their names and their IDs
 bool get_device_endpoints(const std::string &auth_token, std::string_view device_id, std::string& local, std::string& remote) {
     // https://prod.wdckeystone.com/device/v1/device/{device_id}
@@ -757,26 +303,481 @@ bool test_connection(const std::string& endpoint) {
     return false;
 }
 
-// Detect the endpoint (local/remote) to use
-bool detect_endpoint(const std::string& auth_token, std::string_view wdhost) {
-    // Fetch possible endpoints
-    std::string local_url, remote_url;
-    bool res = get_device_endpoints(auth_token, wdhost.substr(13), local_url, remote_url);
-    if (!res) {
-        fprintf(stderr, "Error, failed to get device endpoints!");
+namespace bridge {
+    // Initialize the network bridge
+    bool init_bridge() {
+        // Init the global CURL environment
+        curl_global_init(CURL_GLOBAL_ALL);
+
+        // Init mutex lock array
+        for (int i = 0; i < 5; ++i) {
+            pthread_mutex_init(&mutex_list[i], NULL);
+        }
+
+        // Init CURL handle
+        share = curl_share_init();
+        if (!share) {
+            return false;
+        }
+        // Setup shared data
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_COOKIE);
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_CONNECT);
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_SSL_SESSION);
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_PSL);
+        curl_share_setopt(share, CURLSHOPT_SHARE, CURL_LOCK_DATA_DNS);
+        // Setup locking functions
+        curl_share_setopt(share, CURLSHOPT_LOCKFUNC, curl_share_lock);
+        curl_share_setopt(share, CURLSHOPT_UNLOCKFUNC, curl_share_unlock);
+
+        return true;
+    }
+
+    // Release the network bridge
+    void release_bridge() {
+        // Release shared CURL session
+        curl_share_cleanup(share);
+
+        // Shutdown CURL global environment
+        curl_global_cleanup();
+
+        // Release mutex lock array
+        for (int i = 0; i < 5; ++i) {
+            pthread_mutex_destroy(&mutex_list[i]);
+        }
+    }
+
+    // Login to the remote device
+    bool login(std::string_view username, std::string_view password, std::string &session_id, std::string *access_token) {
+        const std::string auth_url = "https://prod.wdckeystone.com/authrouter/oauth/ro";
+        const std::string_view wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
+        json req = {
+            {"client_id", wdcAuth0ClientID},
+            {"connection", "Username-Password-Authentication"},
+            {"device", "123456789"},
+            {"grant_type", "password"},
+            {"password", password},
+            {"username", username},
+            {"scope", "openid offline_access"},
+        };
+
+        std::string rbody = req.dump();
+        std::vector<std::string> hdrs {
+            "Content-Type: application/json"
+        };
+        response_data resp = make_request("POST", auth_url,  hdrs, rbody.c_str(), (long)rbody.size());
+        if (generic_handler(resp.status_code, resp.response_body)) { 
+            auto json_response = json::parse(resp.response_body);
+            std::string id_token = json_response["id_token"];
+            session_id.assign("Authorization: Bearer " + id_token);
+            if (access_token != NULL) {
+                std::string acc_token = json_response["access_token"];
+                access_token->assign("Authorization: Bearer " + acc_token);
+            }
+            return true;
+        }
         return false;
     }
 
-    // Test connection to the local endpoint
-    std::string endpoint;
-    if (test_connection(local_url)) {
-        endpoint = local_url;
-        printf("Using LOCAL endpoint\n");
-    } else {
-        endpoint = remote_url;
-        printf("Using REMOTE endpoint\n");
+    // List entries on the remote device
+    request_result list_entries(const std::string& path, const std::string &auth_token, std::vector<entry_data> &entries) {
+        const std::string request_url = fmt::format("{}sdk/v2/filesSearch/parents?ids={}&fields=id,mimeType,name,size&pretty=false&orderBy=name&order=asc;", request_start, path);
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        if (etag_mapping.find(request_url) != etag_mapping.end()) {
+            // We have a previous ETag, add if-none-match to the headers
+            headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
+        }
+
+        response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+        if (rd.status_code == 304) {
+            // Entries haven't changed since last run
+            return REQUEST_CACHED;
+        } else if (generic_handler(rd.status_code, rd.response_body)) {
+            // Update ETag mapping
+            if (rd.headers.find("etag") != rd.headers.end()) {
+                etag_mapping[request_url] = rd.headers["etag"];
+            }
+            auto json_response = json::parse(rd.response_body);
+            auto folder_contents = json_response["files"];
+            entries.resize(folder_contents.size());
+            for (int i = 0; i < folder_contents.size(); i++) {
+                std::string id = folder_contents[i]["id"];
+                std::string name = folder_contents[i]["name"];
+                bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
+                int size = 0;
+                if (folder_contents[i]["size"] != nullptr) size = folder_contents[i]["size"];
+                entry_data entry(size, is_dir, std::move(id), std::move(name));
+                entries[i] = entry;
+            }
+            return REQUEST_SUCCESS;
+        }
+        return REQUEST_FAILED;
     }
 
-    request_start = endpoint + "/";
-    return true;
+    // List entries on the remote system for multiple entries
+    request_result list_entries_multiple(const std::string& ids, const std::string &auth_token, std::vector<entry_data> &entries) {
+        const std::string request_url = fmt::format("{}sdk/v2/filesSearch/parents?ids={}&fields=id,mimeType,name,parentID&pretty=false&orderBy=name&order=asc;", request_start, ids);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        if (etag_mapping.find(request_url) != etag_mapping.end()) {
+            // We have a previous ETag, add if-none-match to the headers
+            headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
+        }
+
+        response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+        if (rd.status_code == 304) {
+            return REQUEST_CACHED;
+        } else if (generic_handler(rd.status_code, rd.response_body)) {
+            // Update ETag mapping
+            if (rd.headers.find("etag") != rd.headers.end()) {
+                etag_mapping[request_url] = rd.headers["etag"];
+            }
+
+            auto json_response = json::parse(rd.response_body);
+            auto folder_contents = json_response["files"];
+            entries.resize(folder_contents.size());
+            for (int i = 0; i < folder_contents.size(); i++) {
+                std::string id = folder_contents[i]["id"];
+                std::string name = folder_contents[i]["name"];
+                bool is_dir = folder_contents[i]["mimeType"] == "application/x.wd.dir";
+                std::string parent_id = folder_contents[i]["parentID"];
+                entry_data entry(is_dir, std::move(id), std::move(name), std::move(parent_id));
+                entries[i] = entry;
+            }
+            return REQUEST_SUCCESS;
+        }
+        return REQUEST_FAILED;
+    }
+
+    // Create a new folder on the remote system
+    std::string make_dir(const std::string& folder_name, const std::string& parent_folder_id, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files?resolveNameConflict=true", request_start);
+
+        std::vector<std::string> headers {
+            auth_token,
+            "Content-Type: multipart/related; boundary=287032381131322"
+        };
+
+        json req = {
+            {"name", folder_name},
+            {"parentID", parent_folder_id},
+            {"mimeType", "application/x.wd.dir"},
+        };
+
+        const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
+        response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("mkdir request finished with status code 201\n");
+            if (rd.headers.find("location") != rd.headers.end()) {
+                std::string location_header = rd.headers["location"];
+                int lastPathPart = location_header.find_last_of('/');
+                printf("mkdir Found location header\n");
+                return location_header.substr(lastPathPart + 1, location_header.size() - lastPathPart - 1);
+            }
+        }
+        return std::string("");
+    }
+
+    // Remove an entry from the remote system
+    bool remove_entry(const std::string &entry_id, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}", request_start, entry_id);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("DELETE", request_url, headers, NULL, 0L);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("rm request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Read the contents of a file on the remote system
+    bool read_file(const std::string &file_id, void *buffer, int offset, int size, int &bytes_read, const std::string &auth_token) {
+        CURLcode res;
+        response_data rd;
+        struct curl_slist *chunk = NULL;
+
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/content?download=true", request_start, file_id);
+        const std::string range_header = fmt::format("Range: bytes={}-{}", offset, offset + size - 1);
+
+        std::vector<std::string> headers {
+            auth_token,
+            range_header
+        };
+
+        CURL *curl = request_base("GET", request_url, headers, NULL, 0, rd, chunk);
+        if (curl) {
+            buffer_result current_result(0, (char*)buffer);
+            curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, collect_response_bytes);
+            curl_easy_setopt(curl, CURLOPT_WRITEDATA, &current_result);
+            res = curl_easy_perform(curl);
+            request_free(curl, chunk, res);
+            if (rd.status_code == 416) {
+                // Requested range is wrong
+                bytes_read = 0;
+                printf("read request was for an empty file\n");
+                return true;
+            } else if (generic_handler(rd.status_code, rd.response_body)) {
+                bytes_read = current_result.bytes_read;
+                printf("read request finished with status code 206\n");
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Get the size of a file on the remote system
+    request_result get_file_size(const std::string &file_id, int &file_size, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}?pretty=false&fields=size", request_start, file_id);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        if (etag_mapping.find(request_url) != etag_mapping.end()) {
+            // We have a previous ETag, add if-none-match to the headers
+            headers.emplace_back("If-None-Match: " + etag_mapping[request_url]);
+        }
+
+        response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+        if (rd.status_code == 304) {
+            return REQUEST_CACHED;
+        } else if (generic_handler(rd.status_code, rd.response_body)) {
+            // Update ETag mapping
+            if (rd.headers.find("etag") != rd.headers.end()) {
+                etag_mapping[request_url] = rd.headers["etag"];
+            }
+            printf("get_size request finished with status code 200\n");
+            auto json_response = json::parse(rd.response_body);
+            int size = json_response["size"];
+            file_size = size;
+            return REQUEST_SUCCESS;
+        }
+
+        return REQUEST_FAILED;
+    }
+
+    // Close an open file on the remote system
+    bool file_write_close(const std::string &new_file_id, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/resumable/content?done=true", request_start, new_file_id);
+        printf("file_write_close request URL is: %s\n", request_url.c_str());
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("PUT", request_url, headers, NULL, 0L);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("file_write_close request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Open a file on the remote system
+    bool file_write_open(const std::string &parent_id, const std::string &file_name, const std::string &auth_token, std::string &new_file_id) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/resumable?resolveNameConflict=0&done=false", request_start);
+
+        std::vector<std::string> headers {
+            auth_token,
+            "Content-Type: multipart/related; boundary=287032381131322"
+        };
+
+        // Write request body
+        std::string current_time = get_formatted_time();
+        json req = {
+            {"name", file_name},
+            {"parentID", parent_id},
+            {"mTime", current_time},
+        };
+
+        const std::string request_body = fmt::format("--287032381131322\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n{}\r\n--287032381131322--", req.dump());
+
+        response_data rd = make_request("POST", request_url, headers, request_body.c_str(), (long)request_body.size());
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            if (rd.headers.find("location") != rd.headers.end()) { 
+                std::string location_header = rd.headers["location"];
+                int last_path_part_idx = location_header.find_last_of('/');
+                printf("file_write_open found location header\n");
+                new_file_id = location_header.substr(last_path_part_idx + 1, location_header.size() - last_path_part_idx - 1);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
+    // Write bytes to a file on the remote system
+    bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer) {
+        const std::string request_url = fmt::format("{}{}/resumable/content?offset={}&done=false", request_start, file_location, offset);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("PUT", request_url, headers, buffer, (long) size);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("write_file request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Rename a file on the remote system
+    bool rename_entry(const std::string &entry_id, const std::string &new_name, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
+
+        std::vector<std::string> headers {
+            auth_token,
+            "Content-Type: text/plain;charset=UTF-8"
+        };
+
+        // Write request body
+        std::string current_time = get_formatted_time();
+        json req = {
+            {"name", new_name},
+            {"mTime", current_time}
+        };
+
+        std::string rbody = req.dump();
+
+        response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("rename_entry request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Set the modification time of a file
+    bool set_modification_time(const std::string &entry_id, const time_t &new_time, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
+
+        std::vector<std::string> headers {
+            auth_token,
+            "Content-Type: text/plain;charset=UTF-8"
+        };
+
+        // Write request body
+        std::string time_to_set = to_iso_time(new_time);
+        json req = {
+            {"mTime", time_to_set}
+        };
+
+        std::string rbody = req.dump();
+
+        response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("set_modification_time request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Move an entry on the remote system
+    bool move_entry(const std::string &entry_id, const std::string &new_parent_id, const std::string &auth_token) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/patch", request_start, entry_id);
+
+        std::vector<std::string> headers {
+            auth_token,
+            "Content-Type: text/plain;charset=UTF-8"
+        };
+
+        // Write request body
+        std::string current_time = get_formatted_time();
+        json req = {
+            {"parentID", new_parent_id},
+        };
+
+        std::string rbody = req.dump();
+
+        response_data rd = make_request("POST", request_url, headers, rbody.c_str(), (long)rbody.size());
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            printf("move_entry request finished with status code 204\n");
+            return true;
+        }
+
+        return false;
+    }
+
+    // Get the auth0 userid of the user
+    bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
+        const std::string request_url = "https://wdc.auth0.com/userinfo";
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            auto json_response = json::parse(rd.response_body);
+            std::string id_token = json_response["sub"];
+            user_id = id_token;
+            return true;
+        }
+        return false;
+    }
+
+    // Get user devices with their names and their IDs
+    bool get_user_devices(const std::string &auth_token, const std::string &user_id, std::vector<std::pair<std::string, std::string>> &device_list) {
+        // https://device.mycloud.com/device/v1/user/{auth0_user_id} (legacy URL see new URL below)
+        // https://prod.wdckeystone.com/device/v1/user/{auth0_user_id}
+
+        std::string escaped_user_id = encode_url_part(user_id.c_str());
+        const std::string request_url = fmt::format("https://prod.wdckeystone.com/device/v1/user/{}", escaped_user_id);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("GET", request_url, headers, NULL, 0L);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            auto json_response = json::parse(rd.response_body);
+            auto data_obj = json_response["data"];
+            device_list.resize(data_obj.size());
+            for (int i = 0; i < data_obj.size(); i++) {
+                std::string device_id = data_obj[i]["deviceId"];
+                std::string device_name = data_obj[i]["name"];
+                device_list[i] = std::move(make_pair(device_id, device_name));
+            }
+            return true;
+        }
+        return false;
+    }
+
+    // Detect the endpoint (local/remote) to use
+    bool detect_endpoint(const std::string& auth_token, std::string_view wdhost) {
+        // Fetch possible endpoints
+        std::string local_url, remote_url;
+        bool res = get_device_endpoints(auth_token, wdhost.substr(13), local_url, remote_url);
+        if (!res) {
+            fprintf(stderr, "Error, failed to get device endpoints!");
+            return false;
+        }
+
+        // Test connection to the local endpoint
+        std::string endpoint;
+        if (test_connection(local_url)) {
+            endpoint = local_url;
+            printf("Using LOCAL endpoint\n");
+        } else {
+            endpoint = remote_url;
+            printf("Using REMOTE endpoint\n");
+        }
+
+        request_start = endpoint + "/";
+        return true;
+    }
 }
