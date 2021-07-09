@@ -31,7 +31,7 @@ int main (int argc, char *argv[]) {
 
     if (conf.username == NULL || conf.password == NULL || conf.host == NULL) {
         fprintf(stderr, "Error: too few arguments given\n");
-        fprintf(stderr, "Usage: wd_bridge -f <mount_point> -ouser=<username>,pass=<password>,host=<device_id>\n");
+        fprintf(stderr, "Usage: wd_bridge [-f] <mount_point> -ouser=<username>,pass=<password>,host=<device_id>\n");
         return 1;
     }
 
@@ -71,7 +71,7 @@ int main (int argc, char *argv[]) {
     WdFs fs;
     fs.set_authorization_header(authorization_header);
 
-    int result = fs.run(3, args.argv);
+    int result = fs.run(args.argc, args.argv);
     release_bridge();
     free(conf.host);
     return result;
