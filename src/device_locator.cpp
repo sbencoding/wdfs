@@ -17,9 +17,17 @@ int main (int argc, char *argv[]) {
     
     printf("Enumerating devices... please wait!\n");
 
+    // Initialize the network bridge
+    if (!bridge::init_bridge()) {
+        fprintf(stderr, "Network bridge initialization failed... shutting down\n");
+        bridge::release_bridge();
+        return 1;
+    }
+
     // Login with given credentials
     if (!bridge::login(username, password, authorization_header, &access_token)) {
         fprintf(stderr, "Login failed... shutting down\n");
+        bridge::release_bridge();
         return 1;
     }
 
@@ -28,6 +36,7 @@ int main (int argc, char *argv[]) {
     bool userid_result = bridge::auth0_get_userid(access_token, auth0_userid);
     if (!userid_result) {
         fprintf(stderr, "User ID lookup failed\n");
+        bridge::release_bridge();
         return 1;
     }
 
@@ -37,6 +46,7 @@ int main (int argc, char *argv[]) {
 
     if (!device_enum_result) {
         fprintf(stderr, "Device enumeration failed\n");
+        bridge::release_bridge();
         return 1;
     }
 
