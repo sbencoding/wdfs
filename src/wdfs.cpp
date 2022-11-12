@@ -681,19 +681,21 @@ int WdFs::readdir(const char *path , void *buffer, fuse_fill_dir_t filler,
         }
 
         // Prefetch subfolder counts
-        if (!subfolder_id_param.empty()) subfolder_id_param.pop_back(); // Remove trailing "," from the parameter
-        std::vector<bridge::entry_data> subfolders;
-        bridge::request_result res = bridge::list_entries_multiple(subfolder_id_param, auth_header, subfolders);
-        if (res == bridge::REQUEST_SUCCESS) {
-            LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
-            for (const auto& entry : subfolders) {
-                subfolder_count_cache[entry.parent_id].subfolder_count += entry.is_dir;
-            }
-        } else if (res == bridge::REQUEST_CACHED) {
-            // Fill subfolder_count from previously cached values
-            LOG("[readdir.subfolder_count_prefetch]: Server sent cache is valid\n");
-            for (const std::string& id : subfolder_ids) {
-                subfolder_count_cache[id].is_hot = 1;
+        if (!subfolder_id_param.empty()) {
+            subfolder_id_param.pop_back(); // Remove trailing "," from the parameter
+            std::vector<bridge::entry_data> subfolders;
+            bridge::request_result res = bridge::list_entries_multiple(subfolder_id_param, auth_header, subfolders);
+            if (res == bridge::REQUEST_SUCCESS) {
+                LOG("[readdir.subfolder_count_prefetch]: Server sent subfolder data\n");
+                for (const auto& entry : subfolders) {
+                    subfolder_count_cache[entry.parent_id].subfolder_count += entry.is_dir;
+                }
+            } else if (res == bridge::REQUEST_CACHED) {
+                // Fill subfolder_count from previously cached values
+                LOG("[readdir.subfolder_count_prefetch]: Server sent cache is valid\n");
+                for (const std::string& id : subfolder_ids) {
+                    subfolder_count_cache[id].is_hot = 1;
+                }
             }
         }
 
