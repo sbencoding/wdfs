@@ -61,7 +61,7 @@ int main (int argc, char *argv[]) {
 
     // Select device endpoint to use
     std::string_view device_id(conf.host);
-    bool endpoint_result = bridge::detect_endpoint(authorization_header, device_id);
+    bool endpoint_result = bridge::detect_endpoint(access_token, device_id);
     if (!endpoint_result) {
         fprintf(stderr, "Failed to detect the endpoint... shutting down\n");
         bridge::release_bridge();
@@ -69,7 +69,7 @@ int main (int argc, char *argv[]) {
     }
 
     WdFs fs;
-    fs.set_authorization_header(authorization_header);
+    fs.set_authorization_header(access_token);
 
     int result = fs.run(args.argc, args.argv);
     bridge::release_bridge();

@@ -42,7 +42,7 @@ int main (int argc, char *argv[]) {
 
     // Get list of devices
     std::vector<std::pair<std::string, std::string>> devices;
-    bool device_enum_result = bridge::get_user_devices(authorization_header, auth0_userid, devices);
+    bool device_enum_result = bridge::get_user_devices(access_token, auth0_userid, devices);
 
     if (!device_enum_result) {
         fprintf(stderr, "Device enumeration failed\n");

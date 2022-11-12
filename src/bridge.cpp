@@ -251,10 +251,8 @@ bool generic_handler(int status_code, std::string &response_body) {
     return false;
 }
 
-// Get user devices with their names and their IDs
+// Get local and remote endpoints of a given device
 bool get_device_endpoints(const std::string &auth_token, std::string_view device_id, std::string& local, std::string& remote) {
-    // https://prod.wdckeystone.com/device/v1/device/{device_id}
-
     const std::string request_url = fmt::format("https://prod.wdckeystone.com/device/v1/device/{}", device_id);
 
     std::vector<std::string> headers {
@@ -346,26 +344,28 @@ namespace bridge {
         }
     }
 
-    // Login to the remote device
     bool login(std::string_view username, std::string_view password, std::string &session_id, std::string *access_token) {
-        const std::string auth_url = "https://prod.wdckeystone.com/authrouter/oauth/ro";
-        const std::string_view wdcAuth0ClientID = "56pjpE1J4c6ZyATz3sYP8cMT47CZd6rk";
+        // Mechanism stolen from: https://github.com/mnencia/mchfuse/blob/60b04c227e55709832bb6d8a27d013b07de805d9/mch/client.go#L46
+        const std::string auth_url = "https://prod.wdckeystone.com/authrouter/oauth/token";
+        const std::string_view wdcAuth0ClientID = "9B0Gi617tROKHc2rS95sT1yJzR6MkQDm";
+        const std::string_view wdcAuth0ClientSecret = "oSJOB1KOWnLVZm11DVknu2wZkTj5AGKxcINEDtEUPE30jHKvEqorM8ocWbyo17Hd";
         json req = {
-            {"client_id", wdcAuth0ClientID},
-            {"connection", "Username-Password-Authentication"},
-            {"device", "123456789"},
-            {"grant_type", "password"},
-            {"password", password},
+            {"grant_type", "http://auth0.com/oauth/grant-type/password-realm"},
+            {"realm", "Username-Password-Authentication"},
+            {"audience", "mycloud.com"},
             {"username", username},
-            {"scope", "openid offline_access"},
+            {"password", password},
+            {"scope", "openid offline_access nas_read_write nas_read_only user_read device_read"},
+            {"client_id", wdcAuth0ClientID},
+            {"client_secret", wdcAuth0ClientSecret}
         };
 
         std::string rbody = req.dump();
         std::vector<std::string> hdrs {
             "Content-Type: application/json"
         };
-        response_data resp = make_request("POST", auth_url,  hdrs, rbody.c_str(), (long)rbody.size());
-        if (generic_handler(resp.status_code, resp.response_body)) { 
+        response_data resp = make_request("POST", auth_url, hdrs, rbody.c_str(), (long)rbody.size());
+        if (generic_handler(resp.status_code, resp.response_body)) {
             auto json_response = json::parse(resp.response_body);
             std::string id_token = json_response["id_token"];
             session_id.assign("Authorization: Bearer " + id_token);
@@ -715,7 +715,7 @@ namespace bridge {
 
     // Get the auth0 userid of the user
     bool auth0_get_userid(const std::string &auth_token, std::string &user_id) {
-        const std::string request_url = "https://wdc.auth0.com/userinfo";
+        const std::string request_url = "https://prod.wdckeystone.com/authservice/v1/user/userinfo";
         std::vector<std::string> headers {
             auth_token
         };
@@ -723,7 +723,7 @@ namespace bridge {
         response_data rd = make_request("GET", request_url, headers, NULL, 0L);
         if (generic_handler(rd.status_code, rd.response_body)) {
             auto json_response = json::parse(rd.response_body);
-            std::string id_token = json_response["sub"];
+            std::string id_token = json_response["data"]["sub"];
             user_id = id_token;
             return true;
         }
