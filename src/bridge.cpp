@@ -617,6 +617,31 @@ namespace bridge {
         return false;
     }
 
+    // Open an existing file on the remote system for overwriting
+    bool file_overwrite_open(const std::string &file_id, const std::string &auth_token, std::string &new_file_id) {
+        const std::string request_url = fmt::format("{}sdk/v2/files/{}/resumable?offset=0&done=false", request_start, file_id);
+
+        std::vector<std::string> headers {
+            auth_token
+        };
+
+        response_data rd = make_request("POST", request_url, headers, NULL, 0L);
+        if (generic_handler(rd.status_code, rd.response_body)) {
+            if (rd.headers.find("location") != rd.headers.end()) {
+                printf(" - overwrite: Created new resumable file: %s\n", rd.headers["location"].c_str());
+                std::string location_header = rd.headers["location"];
+                // Location: /sdk/v2/files/<id>/resumable
+                int last_slash = location_header.find_last_of('/');
+                int second_last_slash = location_header.find_last_of('/', last_slash - 1);
+                printf("file_write_open found location header\n");
+                new_file_id = location_header.substr(second_last_slash + 1, last_slash - second_last_slash - 1);
+            }
+            return true;
+        }
+
+        return false;
+    }
+
     // Write bytes to a file on the remote system
     bool write_file(const std::string &auth_token, const std::string &file_location, int offset, int size, const char *buffer) {
         const std::string request_url = fmt::format("{}{}/resumable/content?offset={}&done=false", request_start, file_location, offset);

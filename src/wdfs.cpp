@@ -265,6 +265,7 @@ int path_get_size(const std::string &file_path, const std::string &auth_header) 
 }
 
 // Change the size of the given file
+// TODO: faster truncate with field in the query of the request
 int WdFs::truncate(const char* path, off_t offset, struct fuse_file_info *fi) {
     LOG("[truncate]: Called for path %s\n Offset: %d\n", path, offset);
     std::string str_path(path);
@@ -411,8 +412,7 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
     LOG("[release]: Releasing file %s\n", file_path);
     std::string str_path(file_path);
     if (temp_file_binding.find(str_path) != temp_file_binding.end()) {
-        // File to be released is an open temp file, close the write (upload) call here
-        std::string file_name(str_path.substr(str_path.find_last_of('/') + 1));
+        // File to be released is an overwritten file, close the write (upload) call here
         std::string remote_temp_id = temp_file_binding[str_path];
         bool close_result = bridge::file_write_close(remote_temp_id, auth_header);
         if (!close_result) LOG("[release]: Remote temp file close failed\n");
@@ -420,19 +420,9 @@ int WdFs::release(const char* file_path, struct fuse_file_info *) {
         temp_file_binding.erase(str_path);
         // Remove the original file
         std::string original_id = get_path_remote_id(str_path, auth_header);
-        bool remove_result = bridge::remove_entry(original_id, auth_header);
-        if (!remove_result) {
-            LOG("[release]: Failed to remove old file!\n");
-            return -1;
-        }
         // Update the ID-local cache with the new ID of the old file
         remote_id_map[str_path] = id_cache_value(remote_temp_id, false);
-        // Rename the new file
-        bool rename_result = bridge::rename_entry(remote_temp_id, file_name, auth_header);
-        if (!rename_result) {
-            LOG("[release]: Failed to rename new file to old name!\n");
-            return -1;
-        }
+        // TODO: is no other cache update needed that might have depended on the ID ?
     } else if (create_opened_files.find(str_path) != create_opened_files.end()) {
         // File is has been created, but hasn't been closed yet
         std::string new_file_id = create_opened_files[str_path];
@@ -452,53 +442,17 @@ int WdFs::open(const char* file_path, struct fuse_file_info *fi) {
     LOG("[open]: File opened with %d mode\n", fi->flags);
     // Ignore read only option as remote device is capable of handling offsets while reading
     if (fi->flags == MY_O_RDONLY || fi->flags == MY_O_TRUNC) return 0;
-    // tempfile required because remote can't write to a file after it's closed
-    LOG("[open]: File wasn't in read only or truncate mode, preloading to remote temp file...\n");
+
     std::string str_path(file_path);
-    int last_slash = str_path.find_last_of('/');
-    std::string parent_path(str_path.substr(0, last_slash));
-    std::string file_name(str_path.substr(last_slash + 1) + ".bridge_temp_file");
-    LOG("[open]: Parent folder is: %s\n", parent_path.c_str());
-    LOG("[open]: Temp file name is: %s\n", file_name.c_str());
-    std::string parent_id = get_path_remote_id(parent_path, auth_header);
-    LOG("[open]: Parent folder ID is: %s\n", parent_id.c_str());
-    // Load contents of remote file into the temp file
-    std::string remote_id = get_path_remote_id(str_path, auth_header);
-    int remote_file_size = -1;
-    // Get size of the remote file
-    bridge::request_result res = bridge::get_file_size(remote_id, remote_file_size, auth_header);
-    if (res == bridge::REQUEST_CACHED) remote_file_size = filesize_cache[remote_id].filesize; // Load size from cache
-    else if (res == bridge::REQUEST_SUCCESS) filesize_cache[remote_id].filesize = remote_file_size; // Push new size to cache
-    if (remote_file_size != -1) {
-        LOG("[open]: Remote file exists and has %d bytes\n", remote_file_size);
-        // Create temp file on remote
-        std::string temp_file_id;
-        bool temp_open_res = bridge::file_write_open(parent_id, file_name, auth_header, temp_file_id);
-        if (!temp_open_res) return -1;
-        // Read the remote file in chunks
-        int bytes_read = 0;
-        const int CHUNK_SIZE = 4096;
-        void *buffer = malloc(CHUNK_SIZE);
-        memset(buffer, 0, CHUNK_SIZE);
-        std::string location_hdr("sdk/v2/files/" + temp_file_id);
-        while (bytes_read != remote_file_size) {
-            int local_read = 0;
-            bool success = bridge::read_file(remote_id, buffer, bytes_read, CHUNK_SIZE, local_read, auth_header);
-            LOG("[open]: Read %d bytes from remote; progress: %d/%d\n", local_read, bytes_read, remote_file_size);
-            if (!success) return -1;
-            bytes_read += local_read;
-            // Write file to remote temp file
-            bool write_result = bridge::write_file(auth_header, location_hdr, bytes_read - local_read, local_read, (char*) buffer);
-            if (!write_result) return -1;
-        }
-        free(buffer);
-        LOG("[open]: Remote file copied to temp file on the remote filesystem\n");
-        // Bind path to temp file
-        temp_file_binding[str_path] = temp_file_id;
-        LOG("[open]: Temp file binding %s=>%s cached\n", file_path, temp_file_id.c_str());
-        return 0;
+    std::string old_file_id = get_path_remote_id(str_path, auth_header);
+    std::string new_file_id;
+    if (!bridge::file_overwrite_open(old_file_id, auth_header, new_file_id)) {
+        LOG("[open]: Error, failed to open file for overwriting");
+        return -1;
     }
-    return -1;
+
+    temp_file_binding[str_path] = new_file_id;
+    return 0;
 }
 
 // Write bytes to a file on the remote system
@@ -512,10 +466,11 @@ int WdFs::write(const char* file_path, const char* buffer, size_t size, off_t of
     } else {
         // We don't have a temp file => it's a newly created empty file that's still open for writing
         if (create_opened_files.find(str_path) == create_opened_files.end()) {
-            LOG("[write]: Tried to write without tempfile and file's not in created_open map!\n");
+            LOG("[write]: Tried to write without opening file in overwrite mode and file's not in created_open map!\n");
             return -1;
+        } else {
+            file_id = create_opened_files[str_path];
         }
-        file_id = create_opened_files[str_path];
     }
     // write the given bytes to the remote file
     LOG("[write]: Write target file found with ID: %s\n", file_id.c_str());
